@@ -23,6 +23,7 @@ import tempfile
 import time
 import traceback
 import wave
+import zipfile
 import zlib
 from urllib.parse import parse_qs, urlsplit
 
@@ -57,7 +58,7 @@ def serve_fixture(state: Path) -> None:
     original_post = app.Handler.do_POST
 
     def fixture_post(handler):
-        if urlsplit(handler.path).path in {"/api/pick-folder", "/api/wechat/import", "/api/wechat/keys"}:
+        if urlsplit(handler.path).path in {"/api/pick-folder", "/api/wechat/import", "/api/wechat/keys", "/api/reader/export/reveal"}:
             return handler.response({"error": "System actions are disabled in browser fixtures"}, 405)
         return original_post(handler)
 
@@ -516,6 +517,12 @@ def check_synthetic_media(page, work: Path, state: Path, checks: list) -> None:
         source.write_bytes(body)
         asset_id = library.media.store_file(source, kind, mime, filename=identifier)
         library.media.link(message_id, kind, asset_id)
+    original = work / "smoke-original"
+    original.write_bytes(b"Synthetic original attachment bytes\n" * 4096)
+    library.media.store_file(original, "original", "application/octet-stream", filename="synthetic-original.dat")
+    unavailable_conversation = next(item for item in library.conversations()["conversations"] if "工作札记" in item["title"])
+    unavailable_message = library.messages(unavailable_conversation["id"])["messages"][0]
+    library.media.unavailable(unavailable_message["id"], "image", status="missing")
     ready_media = library.media.for_messages([message_id])[message_id]
     ready_media.sort(key=lambda item: ["image", "audio", "video"].index(item["kind"]))
     media_requests = []
@@ -609,32 +616,132 @@ def check_synthetic_media(page, work: Path, state: Path, checks: list) -> None:
     page.locator("#messages-scroll").evaluate("element => { element.scrollTop = 0; }")
 
 
-def check_readable_archive(page, work: Path, state: Path, job_finished, checks: list, avatars: dict) -> None:
+def check_readable_archive(page, work: Path, state: Path, job_finished, checks: list, avatars: dict, artifacts: Path) -> None:
     """Prove a saved ZIP can play media after every original fixture is deleted."""
     page.unroute("**/api/conversations/*/messages?*")
     clear_toasts(page)
-    open_management(page)
-    with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/export") as exported:
-        page.locator('[data-action="reader-export"]').click()
-    assert exported.value.status == 202, "The reader export did not start."
-    result = job_finished("reader_export")
-    archive = Path(result["path"])
-    assert archive.is_relative_to(work) and archive.is_file(), "The readable ZIP was not saved to the test directory."
-    assert result["objects"] == 5, "The readable ZIP did not include all three media objects and both avatars."
+    configuration = (state / "config.json").read_bytes()
+    chosen_destination = {"path": work / "one-time-export"}
+    reveals = []
+
+    def select_destination(route):
+        assert route.request.post_data_json == {"purpose": "export"}
+        route.fulfill(status=200, content_type="application/json", json={"path": str(chosen_destination["path"])})
+
+    def reveal_export(route):
+        reveals.append(route.request.post_data_json)
+        route.fulfill(status=200, content_type="application/json", json={"ok": True})
+
+    page.route("**/api/pick-folder", select_destination)
+    page.route("**/api/reader/export/reveal", reveal_export)
+
+    def export_current(source_name):
+        expect(page.locator('[data-action="reader-export"]')).to_be_visible()
+        with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/export-info") as information:
+            page.locator('[data-action="reader-export"]').click()
+        assert information.value.status == 200
+        info = information.value.json()
+        expect(page.locator("#reader-export-dialog")).to_be_visible()
+        expect(page.locator("#export-source")).to_contain_text(source_name)
+        expect(page.locator("#export-stats")).to_contain_text("114")
+        expect(page.locator("#export-stats .export-stat").nth(0).locator("strong")).to_have_text("4")
+        expect(page.locator("#export-stats .export-stat").nth(2).locator("strong")).to_have_text("6")
+        expect(page.locator("#export-media-detail")).to_contain_text("已保存原件 1")
+        expect(page.locator("#export-unavailable")).to_contain_text("1 条媒体缺失或暂不可用")
+        expect(page.locator("#export-scope-note")).to_contain_text("不受关键词、日期筛选或当前会话影响")
+        expect(page.locator("#export-destination")).to_have_value(info["default_destination"])
+        page.locator('[data-action="export-pick-folder"]').click()
+        expect(page.locator("#export-destination")).to_have_value(str(chosen_destination["path"]))
+        if not info["source"]["archived"]:
+            page.screenshot(path=str(artifacts / "export-all-desktop.png"))
+            viewport = page.viewport_size
+            page.set_viewport_size({"width": 400, "height": 900})
+            page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+            assert page.evaluate("document.documentElement.scrollWidth === 400")
+            assert page.locator("#reader-export-dialog").evaluate("node => node.scrollWidth <= node.clientWidth")
+            page.screenshot(path=str(artifacts / "export-all-mobile.png"))
+            page.locator("#export-start").scroll_into_view_if_needed()
+            expect(page.locator("#export-start")).to_be_visible()
+            page.screenshot(path=str(artifacts / "export-all-mobile-actions.png"))
+            page.set_viewport_size(viewport)
+        if not info["source"]["archived"]:
+            held = []
+
+            def hold_export_response(route):
+                held.append((route, route.fetch()))
+
+            page.route("**/api/reader/export", hold_export_response)
+            page.locator("#export-start").click()
+            deadline = time.monotonic() + 10
+            while not held and time.monotonic() < deadline:
+                page.wait_for_timeout(50)
+            assert held, "The controlled export request did not start"
+            expect(page.locator("#export-progress")).to_be_visible()
+            page.keyboard.press("Escape")
+            page.locator('[data-action="reader-export"]').click()
+            expect(page.locator("#export-progress")).to_be_visible()
+            expect(page.locator("#export-start")).to_be_hidden()
+            route, response = held.pop()
+            with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/export") as exported:
+                route.fulfill(response=response)
+            page.unroute("**/api/reader/export", hold_export_response)
+            checks.append("export_progress_survives_close_and_reopen_during_pending_start")
+        else:
+            with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/export") as exported:
+                page.locator("#export-start").click()
+        assert exported.value.status == 202, "The reader export did not start."
+        assert exported.value.request.post_data_json == {"destination": str(chosen_destination["path"]), "source_id": info["source_id"]}
+        result = job_finished("reader_export")
+        archive = Path(result["path"])
+        assert archive.parent == chosen_destination["path"] and archive.is_file()
+        assert result["objects"] == 6, "The ZIP did not include three media objects, both avatars and the compressed original."
+        assert result["summary"]["messages"] == 114 and result["summary"]["conversations"] == 4
+        assert result["summary"]["unavailable_media"] == 1
+        assert result["source"] == info["source"]
+        expect(page.locator("#export-result")).to_be_visible()
+        expect(page.locator("#export-result-summary")).to_contain_text("114 条消息")
+        expect(page.locator("#export-result-summary")).to_contain_text("ZIP 大小")
+        expect(page.locator("#export-result-path")).to_have_text(str(archive))
+        page.locator('[data-action="export-reveal"]').click()
+        assert reveals[-1] == {"path": str(archive)}
+        page.keyboard.press("Escape")
+        expect(page.locator("#reader-export-dialog")).to_be_hidden()
+        expect(page.locator('[data-action="reader-export"]')).to_be_focused()
+        if not info["source"]["archived"]:
+            with page.expect_response(lambda response: urlsplit(response.url).path == "/api/status"):
+                page.reload(wait_until="domcontentloaded")
+            page.locator('.nav-item[data-page="reader"]').click()
+            page.locator('[data-action="reader-export"]').click()
+            expect(page.locator("#export-result")).to_be_visible()
+            expect(page.locator("#export-result-path")).to_have_text(str(archive))
+            page.keyboard.press("Escape")
+            checks.append("completed_export_result_is_restored_after_browser_reload")
+        assert (state / "config.json").read_bytes() == configuration, "A one-time export changed backup settings"
+        return archive
+
+    apply_date_search(page, "global", "中午", "2024-01-01", "2024-01-01")
+    expect(page.locator(".search-message-result")).to_have_count(1)
+    page.locator("#message-search").fill("公园")
+    expect(page.locator(".message-item")).to_have_count(1)
+    archive = export_current("本机记录")
+    checks.append("all_export_ignores_search_filters_and_uses_one_time_folder_with_summary_and_reveal")
+    checks.append("export_dialog_is_keyboard_accessible_and_fits_400px")
     expect(page.locator('[data-action="reader-open"]')).to_be_enabled()
 
     for folder in (state / "media/objects", state / "media/cache"):
         assert folder.is_relative_to(work)
         shutil.rmtree(folder)
-    for name in ("smoke-image", "smoke-audio", "smoke-video", "synthetic-video.mp4",
+    for name in ("smoke-image", "smoke-audio", "smoke-video", "synthetic-video.mp4", "smoke-original",
                  "synthetic-avatar-conversation.png", "synthetic-avatar-sender.png"):
         (work / name).unlink()
     session = page.context.new_cdp_session(page)
     session.send("Network.clearBrowserCache")
     session.detach()
 
+    selected_archive = {"path": archive}
+
     def select_archive(route):
-        route.fulfill(status=200, content_type="application/json", body=json.dumps({"path": str(archive)}))
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({"path": str(selected_archive["path"])}))
 
     page.route("**/api/pick-archive", select_archive)
     with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/archive") as opened:
@@ -644,7 +751,20 @@ def check_readable_archive(page, work: Path, state: Path, job_finished, checks: 
     expect(page.locator("#reader-source-title")).to_contain_text(archive.name)
     expect(page.locator("#reader-job")).to_be_hidden()
     expect(page.locator('[data-action="reader-live"]')).to_be_visible()
-    expect(page.locator('[data-action="reader-export"]')).to_be_hidden()
+    expect(page.locator('[data-action="reader-export"]')).to_be_visible()
+    chosen_destination["path"] = work / "archive-copy"
+    copied = export_current(archive.name)
+    with zipfile.ZipFile(archive) as first, zipfile.ZipFile(copied) as second:
+        media_names = [name for name in first.namelist() if name.startswith("media/objects/")]
+        assert len(media_names) == 6 and any(name.endswith(".gz") for name in media_names)
+        assert all(first.read(name) == second.read(name) for name in media_names), "Re-export changed stored media bytes"
+    checks.append("opened_archive_can_export_all_unextracted_media_and_preserve_gzip_original_bytes")
+    selected_archive["path"] = copied
+    with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/archive"):
+        page.locator('[data-action="reader-open"]').click()
+    job_finished("reader_open")
+    expect(page.locator("#reader-source-title")).to_contain_text(copied.name)
+    archive.unlink()
     page.locator('[data-action="select-conversation"]').filter(has_text="周末计划").click()
     expect(page.locator(".media-card")).to_have_count(3)
     expect_avatar(page.locator("#conversation-header-avatar"), avatars["conversation"])
@@ -966,7 +1086,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     media_screenshot = artifacts / "media.png"
                     page.screenshot(path=str(media_screenshot), full_page=True)
                     screenshots.append(str(media_screenshot))
-                    check_readable_archive(page, work, state, job_finished, checks, avatars)
+                    check_readable_archive(page, work, state, job_finished, checks, avatars, artifacts)
                     apply_date_search(page, "global", date_from="2024-01-01", date_to="2024-01-01")
                     expect(page.locator(".search-message-result")).to_have_count(3)
                     page.locator(".search-message-result").filter(has_text="日期边界 开始").click()

@@ -145,6 +145,8 @@ body.reader-active { overflow: hidden; }
 .reader-topbar-actions { display: flex; align-items: center; gap: 23px; }
 .reader-topbar-actions > .text-button { color: #c4cfc8; font-size: 12px; }
 .reader-topbar-actions > .text-button:hover { color: #a9edbc; }
+.reader-topbar-actions .reader-export-button { min-height: 32px; padding: 6px 11px; border: 1px solid #537b5d; border-radius: 6px; color: #c6f4d2; background: #30533b; font-size: 12px; white-space: nowrap; }
+.reader-topbar-actions .reader-export-button:hover { background: #3e6749; }
 .reader-management { position: relative; }
 .reader-management > summary { display: flex; align-items: center; gap: 7px; padding: 8px 0 8px 6px; color: #c4cfc8; font-size: 12px; cursor: pointer; list-style: none; border-radius: 5px; }
 .reader-management > summary::-webkit-details-marker { display: none; }
@@ -309,6 +311,33 @@ select { appearance: auto; }
 .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
 .dialog-heading h2 { font-size: 21px; font-weight: 550; }
 .dialog-heading .eyebrow { margin-bottom: 5px; }
+.export-dialog { max-width: 640px; margin: auto; }
+.export-dialog .dialog-heading { margin-bottom: 16px; }
+.export-source-label { color: #aebdb3; font-size: 12px; }
+.export-source { margin-top: 3px; color: #e5eee8; font-size: 15px; font-weight: 550; overflow-wrap: anywhere; }
+.export-scope-note { margin-top: 10px; color: #c0d9c7; font-size: 13px; line-height: 1.8; }
+.export-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 17px; }
+.export-stat { padding: 11px 9px; border: 1px solid #45564b; border-radius: 7px; background: #28362d; }
+.export-stat strong { display: block; color: #d4f3dd; font-size: 21px; font-weight: 550; overflow-wrap: anywhere; }
+.export-stat span { color: #b2c4b8; font-size: 11px; }
+.export-media-detail { margin-top: 8px; color: #bccbc1; font-size: 12px; line-height: 1.8; }
+.export-format-note { display: flex; align-items: flex-start; gap: 9px; margin-top: 17px; padding: 12px; border-radius: 7px; background: #343e38; color: #c4d2c9; font-size: 12px; line-height: 1.85; }
+.export-format-note .icon { margin-top: 2px; color: #a4d9b3; }
+.export-unavailable { margin: 10px 0 18px; color: #cfbeb1; font-size: 12px; line-height: 1.8; }
+.export-dialog .path-field { gap: 8px; }
+.export-dialog .path-field input { min-width: 0; font-size: 12px; }
+.export-dialog .path-field .button { white-space: nowrap; padding-left: 11px; padding-right: 11px; font-size: 12px; }
+.export-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
+.export-actions > .text-button { margin-right: auto; }
+.export-progress { margin-top: 16px; padding: 14px; border: 1px solid #567560; border-radius: 7px; color: #d1e3d7; background: #2e4034; }
+.export-progress progress { width: 100%; height: 10px; margin: 10px 0; accent-color: #8ee1a5; }
+.export-progress p { margin-top: 4px; color: #b4cabd; font-size: 12px; line-height: 1.7; }
+.export-result { padding: 16px; border: 1px solid #53735c; border-radius: 8px; background: #2d4134; }
+.export-result h3 { color: #c5f0d2; font-size: 17px; }
+.export-result p { margin-top: 7px; color: #d0ddd5; font-size: 13px; line-height: 1.75; }
+.export-result .export-result-path { color: #b6c8bd; font-size: 12px; overflow-wrap: anywhere; }
+.export-result .button { margin-top: 13px; font-size: 12px; }
+.export-error { margin-top: 12px; padding: 10px; border-radius: 6px; background: #4a3433; color: #f1c0b9; font-size: 13px; overflow-wrap: anywhere; }
 .manifest-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; margin-bottom: 20px; }
 .manifest-meta > div { min-width: 0; padding: 14px; border-radius: 8px; background: #353f3a; }
 .manifest-meta dt { color: #adbbb2; font-size: 12px; }
@@ -575,4 +604,11 @@ select { appearance: auto; }
   .message-date-filter > summary { padding-left: 4px; padding-right: 4px; font-size: 11px; }
   .message-date-filter > summary .icon { display: none; }
   .message-search { order: 1; }
+  .reader-topbar-actions { gap: 9px; }
+  .reader-topbar-actions .reader-export-button { padding: 6px 8px; font-size: 11px; }
+  .reader-export-button .icon { display: none; }
+  .reader-topbar-title .reader-source-chip { display: none; }
+  .export-dialog { width: calc(100% - 24px); max-height: calc(100dvh - 24px); padding: 20px 17px; }
+  .export-dialog .dialog-heading h2 { font-size: 19px; }
+  .export-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

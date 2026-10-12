@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import threading
@@ -136,6 +137,8 @@ class Application:
         self.library = Library(self.state_dir)
         self.archive_library = None
         self.reader_source = {"archived": False, "name": "本机记录"}
+        self.reader_generation = secrets.token_hex(16)
+        self.completed_exports = {}
         self.scheduler = Scheduler(self.state_dir, PROJECT)
         self.job = None
         self.job_lock = threading.Lock()
@@ -171,6 +174,53 @@ class Application:
     @property
     def reader_library(self):
         return self.archive_library or self.library
+
+    def export_info(self):
+        from vault.readable_archive import export_summary
+        with self.job_lock:
+            library = self.reader_library
+            source = dict(self.reader_source)
+            source_id = self.reader_generation
+        return {"source": source, "source_id": source_id, "summary": export_summary(library),
+                "default_destination": self.config()["destination"]}
+
+    def use_local_reader(self):
+        with self.job_lock:
+            self.archive_library = None
+            self.reader_source = {"archived": False, "name": "本机记录"}
+            self.reader_generation = secrets.token_hex(16)
+
+    def export_destination(self, destination, config):
+        if not isinstance(destination, str) or not destination.strip():
+            raise ValueError("请选择导出文件夹。")
+        folder = Path(destination).expanduser()
+        if not folder.is_absolute():
+            raise ValueError("导出文件夹需要使用绝对路径。")
+        folder = folder.resolve()
+        if folder == Path(folder.anchor) or (folder.exists() and not folder.is_dir()):
+            raise ValueError("请选择有效的导出文件夹。")
+        protected = [self.state_dir]
+        if config.get("source"):
+            protected.append(Path(config["source"]).expanduser().resolve())
+        if any(folder == parent or parent in folder.parents for parent in protected):
+            raise ValueError("导出目录不能位于微信数据或应用内部数据目录中。")
+        return folder
+
+    def reveal_export(self, path):
+        if not isinstance(path, str):
+            raise ValueError("请先完成导出，再显示生成的 ZIP 文件。")
+        with self.job_lock:
+            expected = self.completed_exports.get(path)
+        if expected is None:
+            raise ValueError("只能显示本次运行中已完成导出的 ZIP 文件。")
+        from vault.media_store import signature
+        value = Path(path).lstat()
+        if not stat.S_ISREG(value.st_mode) or signature(value) != expected:
+            raise ValueError("导出的文件已移动或发生变化，请在保存目录中查看。")
+        if sys.platform != "darwin":
+            raise ValueError("请在文件管理器中打开显示的导出目录。")
+        subprocess.run(["/usr/bin/open", "-R", path], check=True, timeout=15, capture_output=True)
+        return {"ok": True}
 
     def save_config(self, changes):
         with self.settings_lock:
@@ -277,12 +327,20 @@ class Application:
                 result["reader_error"] = "原始备份已保存，可读压缩归档未能生成，请重试保存可读归档。"
         return result
 
-    def start_job(self, kind, snapshot_id=None, archive_path=None):
+    def start_job(self, kind, snapshot_id=None, archive_path=None, destination=None, source_id=None):
         config = self.config()
+        export_destination = (self.export_destination(config["destination"] if destination is None else destination, config)
+                              if kind == "reader_export" else None)
         with self.job_lock:
             if self.job and self.job["status"] == "running":
                 raise ValueError("Another operation is already running")
+            export_library = self.reader_library
+            export_source = dict(self.reader_source)
+            if kind == "reader_export" and source_id is not None and source_id != self.reader_generation:
+                raise ValueError("聊天来源已切换，请重新打开“导出全部”后再导出。")
             self.job = {"id": secrets.token_hex(8), "type": kind, "status": "running", "progress": {}}
+            if kind == "reader_export":
+                self.job["source"] = export_source
             job_id = self.job["id"]
 
         def progress(value):
@@ -297,13 +355,19 @@ class Application:
                     result = self.read_wechat(config, progress)
                 elif kind == "reader_export":
                     from vault.readable_archive import create_archive
+                    from vault.media_store import signature
                     with self.operation_lock():
-                        result = create_archive(self.library, config["destination"], progress)
+                        result = create_archive(export_library, export_destination, progress)
+                    result["source"] = export_source
+                    with self.job_lock:
+                        self.completed_exports[result["path"]] = signature(Path(result["path"]).lstat())
                 elif kind == "reader_open":
                     from vault.readable_archive import open_archive
                     opened = open_archive(archive_path, self.state_dir)
-                    self.archive_library = opened
-                    self.reader_source = {"archived": True, "name": Path(archive_path).name}
+                    with self.job_lock:
+                        self.archive_library = opened
+                        self.reader_source = {"archived": True, "name": Path(archive_path).name}
+                        self.reader_generation = secrets.token_hex(16)
                     result = opened.stats()
                 else:
                     result = self.engine.verify(snapshot_id, config["destination"])
@@ -486,6 +550,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.response(self.app.status())
             if parsed.path == "/api/config":
                 return self.response(self.app.config())
+            if parsed.path == "/api/reader/export-info":
+                return self.response(self.app.export_info())
             if parsed.path == "/api/conversations":
                 return self.response(self.app.reader_library.conversations(query.get("q", [""])[0]))
             if parsed.path == "/api/search":
@@ -532,15 +598,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/wechat/import":
                 return self.response(self.app.start_job("wechat_import"), 202)
             if path == "/api/reader/export":
-                return self.response(self.app.start_job("reader_export"), 202)
+                return self.response(self.app.start_job("reader_export", destination=body.get("destination"),
+                                                       source_id=body.get("source_id")), 202)
+            if path == "/api/reader/export/reveal":
+                return self.response(self.app.reveal_export(body.get("path")))
             if path == "/api/reader/archive":
                 archive_path = body.get("path")
                 if not isinstance(archive_path, str) or not Path(archive_path).is_absolute():
                     raise ValueError("请选择本机的可读压缩归档。")
                 return self.response(self.app.start_job("reader_open", archive_path=archive_path), 202)
             if path == "/api/reader/live":
-                self.app.archive_library = None
-                self.app.reader_source = {"archived": False, "name": "本机记录"}
+                self.app.use_local_reader()
                 return self.response({"ok": True})
             if path == "/api/pick-archive":
                 if sys.platform != "darwin":
@@ -557,7 +625,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/pick-folder":
                 if sys.platform != "darwin":
                     raise ValueError("Enter a folder path manually on this platform")
-                prompt = "选择微信数据文件夹" if body.get("purpose") == "source" else "选择备份保存文件夹"
+                prompt = {"source": "选择微信数据文件夹", "export": "选择全部消息与媒体的导出文件夹"}.get(
+                    body.get("purpose"), "选择备份保存文件夹")
                 result = subprocess.run(["/usr/bin/osascript", "-e", f'POSIX path of (choose folder with prompt "{prompt}")'],
                                         capture_output=True, text=True, timeout=180)
                 if result.returncode:

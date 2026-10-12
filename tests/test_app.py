@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -481,6 +482,249 @@ class LocalAuthorizationTests(unittest.TestCase):
         status, headers, _ = self.request("OPTIONS", headers={"Origin": "https://attacker.example"})
         self.assertEqual(status, 501)
         self.assertNotIn("Access-Control-Allow-Origin", headers)
+
+
+class ReaderExportTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="shiliao-export-api-test-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.state = self.root / "state"
+        self.source = self.root / "synthetic-wechat-source"
+        self.source.mkdir()
+        self.config = {"source": str(self.source), "destination": str(self.root / "default-exports"),
+                       "schedule_enabled": False, "schedule_time": "22:00", "interval": "daily",
+                       "timezone": "Asia/Shanghai", "include_media": True}
+        write_json(self.state / "config.json", self.config)
+        scheduler = patch("app.Scheduler", autospec=True)
+        scheduler.start()
+        self.addCleanup(scheduler.stop)
+        self.application = Application(self.state)
+        self.seed(self.application.library, "Synthetic local source", 2)
+        self.config_bytes = self.application.config_path.read_bytes()
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.app = self.application
+        self.server_thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=.01), daemon=True)
+        self.server_thread.start()
+        self.addCleanup(self.close_server)
+
+    def close_server(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.server_thread.join(timeout=2)
+
+    def seed(self, library, title, count):
+        library.import_file(json.dumps({"title": title, "messages": [
+            {"sender": "Synthetic tester", "text": f"Synthetic exported message {index}",
+             "timestamp": 1700000000 + index} for index in range(count)
+        ]}).encode(), "synthetic-export.json")
+
+    def request(self, method, path, data=None, authorized=True):
+        headers = {"Content-Type": "application/json"}
+        if authorized:
+            headers["Authorization"] = "Bearer " + self.application.token
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        try:
+            connection.request(method, path, json.dumps(data).encode() if data is not None else None, headers)
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+
+    def wait_job(self, expected="done"):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            with self.application.job_lock:
+                job = dict(self.application.job or {})
+            if job.get("status") != "running":
+                self.assertEqual(job.get("status"), expected, job)
+                return job
+            time.sleep(.01)
+        self.fail("Synthetic export job did not finish")
+
+    def select_archive(self):
+        from vault.library import Library
+        from vault.readable_archive import create_archive
+        library = Library(self.root / "synthetic-archive-source")
+        self.seed(library, "Synthetic selected archive", 3)
+        media = self.root / "synthetic-image.bin"
+        media.write_bytes(b"Synthetic image payload for archive transport")
+        asset = library.media.store_file(media, "image", "image/png")
+        with library.connect() as db:
+            message_id = db.execute("SELECT MIN(id) FROM messages").fetchone()[0]
+        library.media.link(message_id, "image", asset)
+        original = create_archive(library, self.root / "archive-input")
+        self.application.start_job("reader_open", archive_path=original["path"])
+        self.wait_job()
+        return Path(original["path"]), asset
+
+    def test_export_info_requires_auth_and_does_not_create_an_archive_or_change_settings(self):
+        with patch("vault.readable_archive.create_archive") as exported:
+            self.assertEqual(self.request("GET", "/api/reader/export-info", authorized=False)[0], 401)
+            status, info = self.request("GET", "/api/reader/export-info")
+        self.assertEqual(status, 200)
+        self.assertEqual(info["summary"]["messages"], 2)
+        self.assertFalse(info["source"]["archived"])
+        self.assertTrue(info["source_id"])
+        self.assertEqual(info["default_destination"], self.config["destination"])
+        exported.assert_not_called()
+        self.assertIsNone(self.application.job)
+        self.assertFalse(Path(self.config["destination"]).exists())
+        self.assertEqual(self.application.config_path.read_bytes(), self.config_bytes)
+
+    def test_http_exports_every_record_and_media_from_selected_archive_without_changing_config(self):
+        from vault.readable_archive import open_archive
+        original, asset = self.select_archive()
+        original_bytes = original.read_bytes()
+        info = self.application.export_info()
+        destination = self.root / "chosen-once" / "new-folder"
+        with patch("app.wechat_running", return_value=True), \
+                patch.object(self.application, "assert_wechat_closed", side_effect=AssertionError("Unexpected WeChat access")):
+            status, _ = self.request("POST", "/api/reader/export", {
+                "source_id": info["source_id"], "destination": str(destination),
+                "q": "no synthetic message can match this filter", "date_from": "1999-01-01", "date_to": "1999-01-01"})
+            self.assertEqual(status, 202)
+            job = self.wait_job()
+        exported = Path(job["result"]["path"])
+        self.assertEqual(exported.parent, destination)
+        (self.root / "verify-export").mkdir()
+        opened = open_archive(exported, self.root / "verify-export")
+        self.assertEqual(opened.stats()["messages"], 3)
+        with opened.media.open(asset) as (stream, _):
+            self.assertEqual(stream.read(), b"Synthetic image payload for archive transport")
+        self.assertEqual(original.read_bytes(), original_bytes)
+        self.assertEqual(self.application.library.stats()["messages"], 2)
+        self.assertEqual(self.application.config_path.read_bytes(), self.config_bytes)
+
+    def test_default_destination_is_used_without_requiring_a_source_token(self):
+        status, _ = self.request("POST", "/api/reader/export", {})
+        self.assertEqual(status, 202)
+        result = self.wait_job()["result"]
+        self.assertEqual(Path(result["path"]).parent, Path(self.config["destination"]))
+        self.assertEqual(self.application.config_path.read_bytes(), self.config_bytes)
+
+    def test_switching_reader_invalidates_the_previous_confirmation_token(self):
+        self.select_archive()
+        previous = self.application.export_info()["source_id"]
+        status, _ = self.request("POST", "/api/reader/live", {})
+        self.assertEqual(status, 200)
+        self.assertNotEqual(self.application.export_info()["source_id"], previous)
+        with patch("vault.readable_archive.create_archive") as exported:
+            status, _ = self.request("POST", "/api/reader/export", {"source_id": previous})
+        self.assertEqual(status, 400)
+        exported.assert_not_called()
+
+    def test_export_keeps_its_captured_archive_when_reader_changes_while_worker_runs(self):
+        from vault.readable_archive import create_archive, open_archive
+        self.select_archive()
+        selected = self.application.reader_library
+        info = self.application.export_info()
+        entered, release = threading.Event(), threading.Event()
+
+        def paused(library, destination, progress=None):
+            self.assertIs(library, selected)
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("Synthetic export was not released")
+            return create_archive(library, destination, progress)
+
+        with patch("vault.readable_archive.create_archive", side_effect=paused):
+            self.application.start_job("reader_export", source_id=info["source_id"])
+            try:
+                self.assertTrue(entered.wait(3))
+                self.application.use_local_reader()
+                self.assertIs(self.application.reader_library, self.application.library)
+            finally:
+                release.set()
+            result = self.wait_job()["result"]
+        (self.root / "verify-stable-source").mkdir()
+        opened = open_archive(result["path"], self.root / "verify-stable-source")
+        self.assertEqual(opened.stats()["messages"], 3)
+
+    def test_invalid_destinations_are_rejected_before_export_including_resolved_symlinks(self):
+        existing = self.root / "existing-file"
+        existing.write_bytes(b"Synthetic existing file")
+        source_alias = self.root / "source-alias"
+        source_alias.symlink_to(self.source, target_is_directory=True)
+        state_alias = self.root / "state-alias"
+        state_alias.symlink_to(self.state, target_is_directory=True)
+        invalid = [False, 7, {}, [], "", " ", ".", "relative/export", str(existing),
+                   str(self.source), str(self.source / "nested"), str(self.state), str(self.state / "nested"),
+                   str(source_alias / "nested"), str(state_alias / "nested")]
+        with patch("vault.readable_archive.create_archive") as exported:
+            for destination in invalid:
+                with self.subTest(destination_type=type(destination).__name__, destination_index=invalid.index(destination)):
+                    status, _ = self.request("POST", "/api/reader/export", {"destination": destination})
+                    self.assertEqual(status, 400)
+        exported.assert_not_called()
+        self.assertIsNone(self.application.job)
+        self.assertEqual(existing.read_bytes(), b"Synthetic existing file")
+        self.assertEqual(self.application.config_path.read_bytes(), self.config_bytes)
+
+    def test_export_and_reveal_mutations_require_authentication(self):
+        with patch("vault.readable_archive.create_archive") as exported, patch("app.subprocess.run") as revealed:
+            for path, data in (("/api/reader/export", {}), ("/api/reader/export/reveal", {"path": "synthetic-untrusted.zip"})):
+                with self.subTest(path=path):
+                    self.assertEqual(self.request("POST", path, data, authorized=False)[0], 401)
+        exported.assert_not_called()
+        revealed.assert_not_called()
+
+    def test_reveal_requires_successful_completion_and_a_regular_registered_output(self):
+        from vault.readable_archive import create_archive
+        written, release = threading.Event(), threading.Event()
+        result_holder = {}
+
+        def paused(library, destination, progress=None):
+            result_holder.update(create_archive(library, destination, progress))
+            written.set()
+            if not release.wait(5):
+                raise AssertionError("Synthetic export was not released")
+            return dict(result_holder)
+
+        with patch("vault.readable_archive.create_archive", side_effect=paused):
+            self.application.start_job("reader_export")
+            try:
+                self.assertTrue(written.wait(3))
+                with patch("app.subprocess.run") as revealed:
+                    self.assertEqual(self.request("POST", "/api/reader/export/reveal", {"path": result_holder["path"]})[0], 400)
+                    revealed.assert_not_called()
+            finally:
+                release.set()
+            result = self.wait_job()["result"]
+        exported = Path(result["path"])
+        unknown = self.root / "unregistered.zip"
+        unknown.write_bytes(b"Synthetic unregistered file")
+        with patch("app.subprocess.run", return_value=SimpleNamespace(returncode=0)) as revealed:
+            self.assertEqual(self.request("POST", "/api/reader/export/reveal", {"path": str(unknown)})[0], 400)
+            revealed.assert_not_called()
+            with patch("app.sys.platform", "darwin"):
+                self.assertEqual(self.request("POST", "/api/reader/export/reveal", {"path": str(exported)})[0], 200)
+            arguments = revealed.call_args.args[0]
+            self.assertEqual(arguments, ["/usr/bin/open", "-R", str(exported)])
+            revealed.reset_mock()
+            exported.write_bytes(b"Synthetic replacement of a previously completed archive")
+            self.assertEqual(self.request("POST", "/api/reader/export/reveal", {"path": str(exported)})[0], 400)
+            revealed.assert_not_called()
+            exported.unlink()
+            exported.symlink_to(unknown)
+            self.assertEqual(self.request("POST", "/api/reader/export/reveal", {"path": str(exported)})[0], 400)
+            revealed.assert_not_called()
+
+    def test_failed_export_does_not_authorize_revealing_a_file_created_before_failure(self):
+        from vault.readable_archive import create_archive
+        result_holder = {}
+
+        def failed(library, destination, progress=None):
+            result_holder.update(create_archive(library, destination, progress))
+            raise OSError("Synthetic failure after creating a result")
+
+        with patch("vault.readable_archive.create_archive", side_effect=failed):
+            self.application.start_job("reader_export")
+            self.wait_job(expected="error")
+        self.assertTrue(Path(result_holder["path"]).is_file())
+        with patch("app.subprocess.run") as revealed:
+            self.assertEqual(self.request("POST", "/api/reader/export/reveal", {"path": result_holder["path"]})[0], 400)
+            revealed.assert_not_called()
 
 
 if __name__ == "__main__":

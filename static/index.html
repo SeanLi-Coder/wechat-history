@@ -64,13 +64,14 @@
         <header class="reader-topbar">
           <div class="reader-topbar-title"><h1 id="reader-heading">聊天</h1><span class="reader-source-chip" id="reader-source-chip">本机记录</span></div>
           <div class="reader-topbar-actions">
+            <button class="button reader-export-button" data-action="reader-export" title="导出当前数据源的全部聊天与媒体"><span class="icon" data-icon="archive"></span><span>导出全部</span></button>
             <button class="text-button reader-open-button" data-action="reader-open" title="打开压缩归档"><span class="icon" data-icon="folder"></span><span>打开归档</span></button>
             <button class="text-button" data-action="reader-live" title="返回本机记录" hidden><span class="icon" data-icon="monitor"></span><span>返回本机</span></button>
             <details class="reader-management" id="reader-management">
               <summary title="聊天与归档管理"><span class="icon" data-icon="settings"></span><span>管理</span></summary>
               <div class="reader-management-panel">
                 <div class="reader-management-heading"><h2>聊天与归档管理</h2><button class="icon-button" data-action="close-reader-management" aria-label="收起管理面板"><span class="icon" data-icon="close"></span></button></div>
-                <div class="reader-archive-toolbar"><div class="reader-source"><span class="icon" data-icon="archive"></span><div><strong id="reader-source-title">本机记录</strong><p id="reader-source-description">聊天和可用媒体保存在本机，备份时一并保存可读归档。</p></div></div><button class="button button-outline" data-action="reader-export"><span class="icon" data-icon="archive"></span>保存可读归档</button></div>
+                <div class="reader-archive-toolbar"><div class="reader-source"><span class="icon" data-icon="archive"></span><div><strong id="reader-source-title">本机记录</strong><p id="reader-source-description">聊天和可用媒体保存在本机，备份时一并保存可读归档。</p></div></div></div>
                 <div class="info-note wechat-connect"><span class="icon" data-icon="lock"></span><div><strong>读取本机微信聊天</strong><p id="wechat-key-status">正在检查本机读取状态…</p><div class="wechat-connect-actions"><button class="button button-dark" data-action="read-wechat"><span class="icon" data-icon="refresh"></span>读取 / 更新聊天</button><button class="text-button" data-action="import-keys">导入已有密钥文件</button></div></div></div>
                 <div class="reader-intro" id="reader-intro"><div><h3>导入可读聊天记录</h3><p>支持 ChatLab JSON / JSONL、通用 JSON / CSV / TXT，单个文件最多 100 MB。</p></div><div class="reader-import-actions"><button class="button button-outline" data-action="import"><span class="icon" data-icon="upload"></span>导入聊天记录</button><button class="text-button" data-action="demo">试读示例<span class="icon" data-icon="arrow-right"></span></button></div></div>
               </div>
@@ -100,6 +101,21 @@
     </main>
   </div>
   <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="false"></div>
+  <dialog id="reader-export-dialog" class="manifest-dialog export-dialog" aria-labelledby="export-title" aria-describedby="export-scope-note">
+    <div class="dialog-heading"><div><p class="eyebrow">KEEP EVERY CONVERSATION</p><h2 id="export-title">导出全部聊天与媒体</h2></div><button type="button" class="icon-button" data-action="export-close" aria-label="关闭导出窗口"><span class="icon" data-icon="close"></span></button></div>
+    <p class="export-source-label">当前数据源</p><p id="export-source" class="export-source">正在读取…</p>
+    <p id="export-scope-note" class="export-scope-note">导出此数据源的全部会话与消息，不受关键词、日期筛选或当前会话影响。</p>
+    <div class="export-stats" id="export-stats" aria-label="全部导出内容"></div><p class="export-media-detail" id="export-media-detail"></p>
+    <div class="export-format-note"><span class="icon" data-icon="archive"></span><p>保存为可在拾聊离线打开的 ZIP。包含已整理的图片、语音、视频、头像及保存的原件；保留现有画质与格式，压缩存储并去重。已压缩的媒体可能不会明显变小。</p></div>
+    <p class="export-unavailable" id="export-unavailable"></p>
+    <form id="reader-export-form">
+      <div id="export-destination-field"><label class="field-label" for="export-destination">保存到</label><div class="path-field"><input id="export-destination" type="text" placeholder="选择导出文件夹" autocomplete="off" spellcheck="false"><button type="button" class="button button-outline" data-action="export-pick-folder">选择文件夹</button></div><p class="field-help">仅用于本次导出，不会更改自动备份的保存目录。无需退出微信。</p></div>
+      <div class="export-progress" id="export-progress" role="status" hidden><strong id="export-progress-label">正在导出全部记录…</strong><progress id="export-progress-bar" max="100" aria-label="全部聊天导出进度"></progress><p id="export-progress-detail">正在准备归档</p><p>可关闭此窗口，导出会继续进行；再次点击「导出全部」查看进度。</p></div>
+      <div class="export-result" id="export-result" role="status" hidden><h3>全部导出完成</h3><p id="export-result-summary"></p><p class="export-result-path" id="export-result-path"></p><button type="button" class="button button-outline" data-action="export-reveal"><span class="icon" data-icon="folder"></span>在 Finder 中显示 ZIP</button></div>
+      <p class="export-error" id="export-error" role="alert" hidden></p>
+      <div class="export-actions"><button type="button" class="text-button" data-action="export-close">关闭</button><button type="button" class="button button-outline" data-action="export-reload" hidden>重新读取</button><button type="button" class="button button-outline" data-action="export-again" hidden>再导出一份</button><button type="submit" class="button button-dark" id="export-start" disabled><span class="icon" data-icon="archive"></span>开始全部导出</button></div>
+    </form>
+  </dialog>
   <dialog id="manifest-dialog" class="manifest-dialog"><div class="dialog-heading"><div><p class="eyebrow">ARCHIVE DETAILS</p><h2>归档详情</h2></div><button class="icon-button" id="close-dialog" aria-label="关闭详情"><span class="icon" data-icon="close"></span></button></div><div id="manifest-content"></div></dialog>
   <dialog id="media-preview-dialog" class="media-preview-dialog" aria-labelledby="media-preview-title"><div class="media-preview-heading"><div><h2 id="media-preview-title">图片预览</h2><p id="media-preview-meta"></p></div><div class="media-preview-actions"><button type="button" class="text-button" id="media-preview-size" aria-pressed="false">原始尺寸</button><button type="button" class="icon-button" id="close-media-preview" aria-label="关闭图片预览"><span class="icon" data-icon="close"></span></button></div></div><div id="media-preview-viewport" class="media-preview-viewport"></div></dialog>
 </body>

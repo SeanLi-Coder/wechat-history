@@ -55,6 +55,9 @@ const state = {
   verifiedSnapshots: new Set(),
   verificationResults: new Map(),
   importing: false,
+  readerExport: null,
+  exportRequest: 0,
+  exportTrigger: null,
 };
 
 function icon(name, className = "icon") {
@@ -503,7 +506,8 @@ function renderJob(job) {
 function updateJobButtons() {
   const running = state.status?.job?.status === "running";
   document.querySelectorAll('[data-action="backup"], [data-action="verify"], [data-action="read-wechat"], [data-action="reader-export"], [data-action="reader-open"], [data-action="reader-live"]').forEach((button) => {
-    button.disabled = running || Boolean(button.dataset.loading);
+    const canInspectExport = button.dataset.action === "reader-export" && state.status?.job?.type === "reader_export";
+    button.disabled = (running && !canInspectExport) || Boolean(button.dataset.loading);
     if (running) button.title = "请等待当前任务完成";
     else if (button.title === "请等待当前任务完成") button.removeAttribute("title");
   });
@@ -555,7 +559,6 @@ function renderStatus(status) {
   const readyMedia = (status.media?.items || []).filter(item => item.status === "ready" && ["image", "audio", "video"].includes(item.kind));
   if (readyMedia.length) $("reader-source-description").textContent += ` 已保存 ${readyMedia.map(item => `${count(item.count)} 条${mediaLabel(item.kind)}`).join("、")}。`;
   document.querySelector('[data-action="reader-live"]').hidden = !archived;
-  document.querySelector('[data-action="reader-export"]').hidden = archived;
   renderConversationCount();
   const formatted = formatBytes(totalBytes).split(" ");
   $("stat-storage").replaceChildren(document.createTextNode(formatted[0]), element("small", "", formatted[1]));
@@ -586,9 +589,15 @@ function renderStatus(status) {
   renderSources(status.sources);
   renderJob(status.job);
   updateJobButtons();
+  renderExportDialog();
 }
 
 function observeJob(job) {
+  if (job?.type === "reader_export" && state.readerExport?.jobId === job.id) {
+    state.readerExport.job = job;
+    if (job.status === "done") state.readerExport.result = job.result || {};
+    if (job.status === "error") state.readerExport.error = localizeError(job.error, job.code);
+  }
   if (job?.status === "running") {
     if (state.lastRunningJob?.id === job.id && state.lastRunningJob.snapshotId) job.snapshotId = state.lastRunningJob.snapshotId;
     state.lastRunningJob = job;
@@ -617,7 +626,7 @@ function observeJob(job) {
       toast(`微信记录已导入，新增 ${count(job.result?.messages)} 条消息。`);
       refreshReaderContents();
     } else if (job.type === "reader_export") {
-      toast("可读归档已保存到备份目录，聊天和可用媒体都已收藏。");
+      toast(`全部导出完成：${count(job.result?.summary?.messages)} 条消息。点击「导出全部」查看 ZIP。`);
     } else if (job.type === "reader_open") {
       toast("压缩归档已打开，可以翻阅对话和媒体。");
       resetReaderSource();
@@ -922,6 +931,9 @@ async function clearGlobalSearch() {
 async function resetReaderSource() {
   state.pendingMessageSearch?.cancel();
   state.pendingGlobalSearch?.cancel();
+  state.readerExport = null;
+  state.exportRequest += 1;
+  if ($("reader-export-dialog").open) $("reader-export-dialog").close();
   state.conversationId = null;
   state.conversationLoaded = false;
   state.messages = [];
@@ -946,6 +958,135 @@ async function refreshReaderContents() {
   state.conversationLoaded = false;
   await loadConversations();
   if (state.conversationId) await loadMessages(false);
+}
+
+function renderExportDialog() {
+  const run = state.readerExport;
+  if (!run) return;
+  const result = run.result;
+  const summary = result?.summary || run.info?.summary;
+  const source = result?.source || run.info?.source || run.job?.source;
+  const running = (run.starting || run.jobId) && !result && !run.error;
+  $("export-source").textContent = source ? `${source.archived ? "压缩归档 · " : ""}${source.name || "本机记录"}` : "正在读取当前数据源…";
+  const stats = $("export-stats");
+  stats.replaceChildren();
+  [["全部会话", summary?.conversations], ["全部消息", summary?.messages],
+    ["去重媒体文件", summary?.media?.unique_objects], ["可用头像", summary?.avatars?.ready]].forEach(([label, value]) => {
+    const card = element("div", "export-stat");
+    card.append(element("strong", "", value === undefined ? "—" : count(value)), element("span", "", label));
+    stats.append(card);
+  });
+  const items = summary?.media?.items || [];
+  const readyCount = kind => items.filter(item => item.kind === kind && item.status === "ready").reduce((total, item) => total + (Number(item.count) || 0), 0);
+  const originals = (summary?.media?.assets || []).filter(item => item.kind === "original" && item.status === "ready").reduce((total, item) => total + (Number(item.count) || 0), 0);
+  $("export-media-detail").textContent = summary
+    ? `可用聊天媒体：图片 ${count(readyCount("image"))} · 语音 ${count(readyCount("audio"))} · 视频 ${count(readyCount("video"))} · 已保存原件 ${count(originals)}。媒体原始体积 ${formatBytes(summary.media?.original_bytes)}。`
+    : "正在统计全部记录与已保存媒体…";
+  const unavailable = Number(summary?.unavailable_media) || items.filter(item => item.status !== "ready").reduce((total, item) => total + (Number(item.count) || 0), 0);
+  const stale = Number(summary?.media?.stale_links) || 0;
+  $("export-unavailable").textContent = `${unavailable ? `有 ${count(unavailable)} 条媒体缺失或暂不可用，归档会保留对应说明。` : ""}${stale ? `另有 ${count(stale)} 条媒体关联等待重新整理。` : ""}仅包含当前已整理的记录和已保存媒体；本机缺失或尚未整理的文件不会在导出时自动补回。`;
+  $("export-destination-field").hidden = Boolean(result);
+  $("export-destination").disabled = Boolean(running || run.loading);
+  document.querySelector('[data-action="export-pick-folder"]').disabled = Boolean(running || run.loading);
+  $("export-progress").hidden = !running;
+  if (running) {
+    const progress = run.job?.progress || {};
+    const total = Number(progress.total_files) || 0;
+    const done = Number(progress.done_files) || 0;
+    if (total) $("export-progress-bar").value = Math.min(100, done / total * 100);
+    else $("export-progress-bar").removeAttribute("value");
+    $("export-progress-label").textContent = "正在导出全部记录与已保存媒体…";
+    $("export-progress-detail").textContent = total ? `${count(done)} / ${count(total)} 个文件 · 正在保存 ZIP` : "正在准备全部会话和媒体，较大的归档需要一些时间。";
+  }
+  $("export-result").hidden = !result;
+  if (result) {
+    $("export-result-summary").textContent = `${count(summary?.conversations)} 个会话 · ${count(summary?.messages)} 条消息 · ${count(result.objects ?? summary?.media?.unique_objects)} 个媒体文件，ZIP 大小 ${formatBytes(result.byte_size)}。可在拾聊离线打开。`;
+    $("export-result-path").textContent = result.path || result.filename || "已保存到本机";
+  }
+  $("export-error").hidden = !run.error;
+  $("export-error").textContent = run.error || "";
+  $("export-start").hidden = Boolean(result || running);
+  $("export-start").disabled = !run.info || run.loading || Boolean($("export-start").dataset.loading);
+  document.querySelector('[data-action="export-again"]').hidden = !result;
+  document.querySelector('[data-action="export-reload"]').hidden = !run.error;
+}
+
+async function openExportDialog(button, reload = false) {
+  const dialog = $("reader-export-dialog");
+  if (button?.dataset.action === "reader-export") state.exportTrigger = button;
+  $("reader-management").open = false;
+  if (!dialog.open) dialog.showModal();
+  if (!reload && (state.readerExport?.starting || state.readerExport?.jobId || state.readerExport?.result)) {
+    renderExportDialog();
+    return;
+  }
+  const runningJob = state.status?.job;
+  if (!reload && runningJob?.type === "reader_export" && runningJob.status === "done"
+      && runningJob.result?.path && JSON.stringify(runningJob.result.source) === JSON.stringify(state.status?.reader_source)) {
+    state.readerExport = { jobId: runningJob.id, job: runningJob, result: runningJob.result };
+    renderExportDialog();
+    return;
+  }
+  if (!reload && runningJob?.type === "reader_export" && runningJob.status === "running") {
+    state.readerExport = { jobId: runningJob.id, job: runningJob };
+    renderExportDialog();
+    return;
+  }
+  const request = ++state.exportRequest;
+  state.readerExport = { loading: true, error: "" };
+  $("export-destination").value = "";
+  renderExportDialog();
+  try {
+    const info = await api("/api/reader/export-info");
+    if (request !== state.exportRequest) return;
+    state.readerExport = { info, loading: false, error: "" };
+    $("export-destination").value = info.default_destination || "";
+  } catch (error) {
+    if (request !== state.exportRequest) return;
+    state.readerExport.loading = false;
+    state.readerExport.error = error.message;
+  }
+  renderExportDialog();
+}
+
+async function pickExportFolder(button) {
+  await withBusy(button, async () => {
+    const result = await api("/api/pick-folder", { method: "POST", body: { purpose: "export" } });
+    if (result.path) $("export-destination").value = result.path;
+  }, "选择中…");
+}
+
+async function startExport(event) {
+  event.preventDefault();
+  const run = state.readerExport;
+  if (!run?.info || run.loading || run.starting || (run.jobId && !run.result && !run.error)) return;
+  await withBusy($("export-start"), async () => {
+    run.error = "";
+    run.starting = true;
+    renderExportDialog();
+    try {
+      const destination = $("export-destination").value.trim();
+      const response = await api("/api/reader/export", { method: "POST", body: {
+        ...(destination ? { destination } : {}), source_id: run.info.source_id,
+      } });
+      run.jobId = response.job_id;
+      run.starting = false;
+      run.job = { id: response.job_id, type: "reader_export", status: "running" };
+      state.lastRunningJob = run.job;
+      renderExportDialog();
+      await refreshStatus({ silent: true });
+    } catch (error) { run.error = error.message; }
+    finally { run.starting = false; }
+  }, "正在开始…");
+  renderExportDialog();
+}
+
+async function revealExport(button) {
+  const path = state.readerExport?.result?.path;
+  if (!path) return;
+  await withBusy(button, async () => {
+    await api("/api/reader/export/reveal", { method: "POST", body: { path } });
+  }, "正在定位…");
 }
 
 async function startReaderArchive(action, button) {
@@ -1361,7 +1502,12 @@ function bindEvents() {
         state.lastRunningJob = { id: result.job_id, type: "wechat_import", status: "running" };
         await refreshStatus({ silent: true });
       }, "开始读取…"),
-      "reader-export": () => startReaderArchive("export", button),
+      "reader-export": () => openExportDialog(button),
+      "export-pick-folder": () => pickExportFolder(button),
+      "export-reveal": () => revealExport(button),
+      "export-close": () => $("reader-export-dialog").close(),
+      "export-reload": () => openExportDialog(button, true),
+      "export-again": () => openExportDialog(button, true),
       "reader-open": () => startReaderArchive("open", button),
       "reader-live": () => startReaderArchive("live", button),
       "reader-back": returnToConversations,
@@ -1391,6 +1537,11 @@ function bindEvents() {
   });
   document.querySelector(".brand").addEventListener("click", (event) => { event.preventDefault(); showPage("overview"); });
   $("settings-form").addEventListener("submit", saveSettings);
+  $("reader-export-form").addEventListener("submit", startExport);
+  $("reader-export-dialog").addEventListener("close", () => {
+    state.exportRequest += 1;
+    state.exportTrigger?.focus({ preventScroll: true });
+  });
   $("settings-form").addEventListener("input", () => { state.settingsDirty = true; $("settings-save-status").textContent = "有未保存的更改"; });
   $("schedule-interval").addEventListener("change", () => { $("schedule-time").disabled = $("schedule-interval").value === "hourly"; });
   $("detected-source").addEventListener("change", () => {
