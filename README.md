@@ -37,7 +37,7 @@ macOS 微信本地压缩备份与离线聊天阅读器。只监听 `127.0.0.1`�
 
 升级时先退出正在运行的拾聊，再替换“应用程序”中的应用。聊天资料保存在独立的用户数据目录，不随应用包替换；仍应保留自己的备份。更换应用位置后，需在新位置重新开启并保存定时设置。macOS 可能再次要求文件或其他 App 数据访问权限。
 
-安装包同时提供构建清单、SHA-256 校验文件与第三方源码材料。依赖来源、许可证及对应源码说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，维护者构建方法见 [docs/RELEASING.md](docs/RELEASING.md)。
+安装包同时提供构建清单、SHA-256 校验文件与第三方源码材料。Python 原生依赖（包括 Tcl/Tk、OpenSSL、libffi 等）的上游许可另保存在应用的 `Contents/Resources/licenses/python-build-standalone/`，并随第三方材料包提供。依赖来源、许可证及对应源码说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，维护者构建方法见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 ## 从源码运行
 

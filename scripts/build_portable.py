@@ -20,10 +20,9 @@ PROJECT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT))
 from scripts import build_app
 from scripts.package_release import collect_sources, _version
+from scripts.python_licenses import PYTHON_RELEASE, PYTHON_VERSION
 
 MINIMUM_MACOS = "15.0"
-PYTHON_RELEASE = "20261009"
-PYTHON_VERSION = "3.11.17"
 PYTHON_ARCHIVES = {
     "arm64": ("aarch64", "f58d38af4680fbf9f89c329e732b7cca1bd06ff7a93884798b27d541bee138f6"),
     "x86_64": ("x86_64", "af19b09f79e784b912ac8b2c659805ac26eb5b8c7dc793151ea4dd2e3456f023"),
@@ -279,6 +278,18 @@ def build_portable(architecture, tools, output_dir, cache):
         sources = work / "third-party-sources"
         copy_declared_sources(tools / "sources", sources)
         dependencies = install_dependencies(python, project, work, cache, sources)
+        python_license_dir = resources / "licenses/python-build-standalone"
+        # The bundled runtime now provides zstandard; the build-host Python does
+        # not need third-party modules just to read the pinned full archive.
+        run([python, "-B", "-I", project / "scripts/python_licenses.py", "--arch", architecture,
+             "--destination", python_license_dir, "--cache", cache])
+        python_license_record = json.loads((python_license_dir / "LICENSES.json").read_text())
+        shutil.copytree(python_license_dir, sources / "python-build-standalone")
+        run([python, "-B", "-I", project / "scripts/wheel_licenses.py", "--python-root",
+             resources / "python", "--cache", cache / "wheel-licenses"])
+        wheel_license_dir = resources / "python/licenses/wheels"
+        wheel_license_record = json.loads((wheel_license_dir / "LICENSES.json").read_text())
+        shutil.copytree(wheel_license_dir, sources / "wheel-licenses")
         original_project = build_app.PROJECT
         try:
             build_app.PROJECT = project
@@ -299,11 +310,16 @@ def build_portable(architecture, tools, output_dir, cache):
             path.unlink()
         for path in resources.rglob("direct_url.json"):
             path.unlink()
-        for name in ("requirements.txt", "requirements-portable.txt", "scripts/build_portable.py", "scripts/build_tools.py", "scripts/bundle_tools.py", "scripts/native_launcher.m"):
+        for name in ("requirements.txt", "requirements-portable.txt", "scripts/build_portable.py", "scripts/build_tools.py", "scripts/bundle_tools.py", "scripts/python_licenses.py", "scripts/wheel_licenses.py", "scripts/native_launcher.m"):
             dest = sources / name
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(project / name, dest)
-        dependency_record = {"python": {"version": PYTHON_VERSION, "url": url, "sha256": expected}, **dependencies}
+        dependency_record = {"python": {"version": PYTHON_VERSION, "url": url, "sha256": expected,
+                            "licenses": "licenses/python-build-standalone/LICENSES.json",
+                            "full_distribution": python_license_record["source"]},
+                            "wheel_licenses": {"manifest": "python/licenses/wheels/LICENSES.json",
+                                               "packages": wheel_license_record["packages"],
+                                               "files": len(wheel_license_record["files"])}, **dependencies}
         (resources / "DEPENDENCIES.json").write_text(json.dumps(dependency_record, indent=2) + "\n")
         (sources / "DEPENDENCIES.json").write_text(json.dumps(dependency_record, indent=2) + "\n")
         clean_native_search_paths(bundle, architecture)

@@ -34,6 +34,10 @@ Intel 构建将两条命令中的 `arm64` 改为 `x86_64`，并在 Intel 构建�
 
 工具脚本从固定官方源码原生编译：FFmpeg 禁用 GPL、nonfree 和网络能力；SQLCipher 使用系统 CommonCrypto。应用使用固定的 python-build-standalone `20261009` / CPython `3.11.17`，并保留运行时及依赖的许可文件。确切版本、来源摘要和编译参数以构建脚本与输出清单为准。Python standalone 本身的系统下限不代表整个应用的兼容范围；本项目安装包统一要求 macOS 15+，构建检查覆盖内置二进制的架构、系统下限与动态库依赖。
 
+`install_only_stripped` 运行时不包含完整的上游构建元数据与依赖许可，不能仅保留 CPython 主许可证。构建会额外下载同一 PBS 发布、Python 版本、目标架构和构建配置的完整归档，核对固定 SHA-256，再按 `PYTHON.json` 声明提取 Python 及 Tcl/Tk、OpenSSL、libffi 等原生依赖的许可。元数据、许可文件和逐文件摘要清单一起保留；版本或架构不符、需要随包提供的许可引用缺失、路径不安全时构建失败。该固定版本元数据额外引用了未随 macOS 归档分发的 zlib-ng；仅当其声明严格对应 Apple 系统 zlib 时，清单会单独记录省略原因，不将其标成已收录许可。格式依据 [PBS 官方归档说明](https://gregoryszorc.com/docs/python-build-standalone/main/distributions.html)。
+
+`scripts/wheel_licenses.py` 还会核对已安装包的固定版本，补齐 zstandard 内的 zstd、pilk 内的 SILK SDK、cryptography 内的 OpenSSL 3.4.1 及固定 `Cargo.lock` 对应的 17 项 macOS 运行时 Rust 依赖许可；来源归档及许可文件均记录摘要。结果保存在应用的 `Contents/Resources/python/licenses/wheels/`（含 `LICENSES.json`），并以同一目录树复制到第三方源码 ZIP 的 `third-party-sources/wheel-licenses/`，不删除或替换包原有许可。
+
 `build_portable.py` 负责组装应用、检查依赖、签名及产物校验，并在移动应用位置、隔离用户目录和限制宿主依赖的条件下运行启动、媒体与归档合成检查。检查失败时不得发布该次输出。此流程不需要真实微信账号，不读取生产聊天库，也不运行取钥辅助程序。
 
 以 `arm64` 为例，`dist/installers/` 输出以下四个文件，每个另附一份同名 `.sha256`，共八个文件：
@@ -43,7 +47,7 @@ Intel 构建将两条命令中的 `arm64` 改为 `x86_64`，并在 Intel 构建�
 - `shiliao-0.7.0-macos-arm64-manifest.json`；
 - `shiliao-0.7.0-macos-arm64-third-party-sources.zip`。
 
-Intel 文件名中的架构为 `x86_64`。清单记录系统下限、架构、签名状态、检查结果及资产摘要；第三方源码 ZIP 提供对应版本的源码、许可和构建材料。应用包内的 `Contents/Resources/` 保留 `THIRD_PARTY_NOTICES.md`、`DEPENDENCIES.json`、`python/` 中的上游与各 Python 包许可，以及 `tools/licenses/`。
+Intel 文件名中的架构为 `x86_64`。清单记录系统下限、架构、签名状态、检查结果及资产摘要；第三方源码 ZIP 提供对应版本的源码、许可和构建材料。应用包内的 `Contents/Resources/` 保留 `THIRD_PARTY_NOTICES.md`、`DEPENDENCIES.json`、`python/` 中的各 Python 包许可，以及 `tools/licenses/`。Python 运行时及其原生依赖的 `PYTHON.json`、`LICENSES.json` 和 `licenses/` 位于 `Contents/Resources/licenses/python-build-standalone/`；同一目录树也保存在第三方源码 ZIP 的 `third-party-sources/python-build-standalone/` 中。
 
 发布时保留这些材料的对应关系，不要只上传应用而遗漏校验文件或第三方源码材料。许可详情见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 
@@ -121,6 +125,6 @@ python3 -B scripts/package_release.py --check --version v0.7.0
 
 浏览器测试需要声明的 Playwright / Chrome 环境；不得上传真实聊天截图或私密验证输出。`scripts/test_key_capture.py` 是人工进程和人工数据库的独立 LLDB 检查，不属于普通安装包构建步骤。
 
-确认两架构安装包的构建与内置检查均成功，核对 SHA-256、构建清单与源码材料，实际从最终交付文件解压或挂载并检查应用，再发布安装包和源码。更新已安装的应用时不要把运行中的旧进程当作新构建验证，也不要让测试访问生产状态目录。
+确认两架构安装包的构建与内置检查均成功，核对 SHA-256、构建清单与源码材料，实际从最终交付文件解压或挂载并检查应用。逐项确认 PBS 许可清单中的文件同时存在于应用和第三方源码 ZIP，不能用 CPython 主许可证代替原生依赖许可；随后再发布安装包和源码。更新已安装的应用时不要把运行中的旧进程当作新构建验证，也不要让测试访问生产状态目录。
 
 发布说明应保留：macOS 15+ 与架构要求、当前签名和公证状态、原生微信初始化的版本限制、缺失本地媒体无法恢复、WXGF / MPO 展示限制，以及原始和可读 ZIP 均不额外加密。运行时内置不意味着系统权限已授予，也不意味着支持所有微信版本。
