@@ -23,14 +23,9 @@ macOS 微信本地压缩备份与离线聊天阅读器。只监听 `127.0.0.1`�
 
 ## 安装与启动
 
-从 [Releases](https://github.com/SeanLi-Coder/wechat-history/releases) 下载 **v0.7.0 或更新版本的 macOS 安装包**。安装包要求 **macOS 15 或更新版本**，内置 Python、SQLCipher、FFmpeg / ffprobe 和所需 Python 依赖；使用者无需另装 Python 或 Homebrew。界面仍在默认浏览器中显示。
+直接下载 [M 系列 Mac 安装包（DMG）](https://github.com/SeanLi-Coder/wechat-history/releases/download/v0.7.0/shiliao-0.7.0-macos-arm64.dmg)。发行版仅支持 **Apple Silicon（M 系列，arm64）**，要求 **macOS 15 或更新版本**。安装包内置 Python、SQLCipher、FFmpeg / ffprobe 和所需 Python 依赖；使用者无需另装 Python 或 Homebrew。界面仍在默认浏览器中显示。
 
-| Mac 类型 | 选择的安装包 |
-| --- | --- |
-| Apple Silicon（M1、M2、M3 等 Apple 芯片） | `arm64` |
-| Intel 处理器 | `x86_64` |
-
-1. 在苹果菜单“关于本机”确认芯片类型，下载对应架构的 DMG；也可选包含相同应用的 `.app.zip`。`source.zip` 是供开发者使用的源码包。
+1. 在苹果菜单“关于本机”确认芯片为 Apple M 系列，下载上面的 DMG；[Releases](https://github.com/SeanLi-Coder/wechat-history/releases) 也提供包含相同应用的 `.app.zip`。`source.zip` 是供开发者使用的源码包。
 2. 打开 DMG，将“拾聊.app”拖到“应用程序”；使用 `.app.zip` 时，解压后同样移到“应用程序”。请从这个固定位置打开，再设置定时备份。
 3. 首次打开可能出现 macOS 安全提示。本版本使用 ad-hoc 签名，**尚未获得 Developer ID 签名和 Apple 公证**。确认文件来自项目 Release，并按随附 SHA-256 校验文件核对后，可按照 [Apple 的说明](https://support.apple.com/en-us/102445)，先尝试打开，再到“系统设置 → 隐私与安全性 → 仍要打开”。系统或单位管理策略可能不允许此操作；不能保证没有警告或在所有设备上获准运行。软件不修改 Gatekeeper、TCC 或 SIP。
 4. 已有拾聊可读 ZIP 时，直接点击“导入”合并到本机，或“打开归档”只读浏览，无需微信数据库密钥。读取新电脑上的原生微信记录仍需自己的有效密钥或下文的手动初始化，安装应用不会自动完成取钥。
@@ -136,7 +131,7 @@ This is a continuation of the previous message.
 
 无非空 WAL 时，使用逐页 HMAC 校验的本地解密流程；发现损坏即停止。微信正常退出后仍可能留下包含已提交事务的 WAL。对此会把主数据库及 WAL 复制到当前用户专用的临时目录，再由 SQLCipher 4.x 读取副本并导出明文库，避免只读取主库而遗漏 WAL 中的消息。安装包使用内置 SQLCipher，源码模式查找另行安装的工具；不会用 SQLCipher 对原始微信目录执行 checkpoint 或写入。非空 rollback journal 仍会拒绝处理，需要先让微信正常恢复并退出。临时明文数据库在导入结束后清理。
 
-没有密钥时，可手动使用本项目源码中的初始化辅助程序。该流程另外依赖系统 LLDB 和匹配的 Apple Python，目前仅实现原生 Apple Silicon；不承诺适用于所有微信版本或 Intel Mac。安装包内置的运行时不替代这套调试工具，也不会自动启动初始化。已有可读归档不需要此步骤。工作方式参考 [同版本的本地取钥实现](https://gist.github.com/acmerfight/0a01249ef72970d07a2603dbb629e80f)。首次操作需要退出当前微信，并可能完成手机登录确认。
+没有密钥时，可在 M 系列 Mac 上手动使用本项目源码中的初始化辅助程序。该流程另外依赖系统 LLDB 和匹配的 Apple Python，不承诺适用于所有微信版本。安装包内置的运行时不替代这套调试工具，也不会自动启动初始化。已有可读归档不需要此步骤。工作方式参考 [同版本的本地取钥实现](https://gist.github.com/acmerfight/0a01249ef72970d07a2603dbb629e80f)。首次操作需要退出当前微信，并可能完成手机登录确认。
 
 ```bash
 # Prepare only; does not launch or stop WeChat.
@@ -170,7 +165,7 @@ python3 scripts/wechat_initialize.py capture --acknowledge-debug-copy
 
 导出摘要分别统计全部消息、有效媒体关联、去重后的文件、头像和不可用媒体；缺失、格式不支持、未完成整理的状态会保留，不能凭记录恢复本机没有的素材。“全部”指当前已整理资料库的范围，普通文件附件及其他尚未支持的消息类型不会在此步骤自动解析；需要保留所选微信目录内所有原始文件时可使用原始 ZIP 备份。
 
-在拾聊中打开时，先校验并载入聊天库，再按需解压请求的媒体，无需预先解压整个 ZIP。请在阅读期间保持 ZIP 文件可访问，尚未读取的媒体仍需要从它提取。读取过的内容会缓存在应用数据目录；缓存和归档都需要磁盘空间。单份归档可以独立复制到另一台已安装对应架构拾聊的 Mac 打开，不需要保留更早的版本或重新取得微信密钥。
+在拾聊中打开时，先校验并载入聊天库，再按需解压请求的媒体，无需预先解压整个 ZIP。请在阅读期间保持 ZIP 文件可访问，尚未读取的媒体仍需要从它提取。读取过的内容会缓存在应用数据目录；缓存和归档都需要磁盘空间。单份归档可以独立复制到另一台已安装拾聊的 M 系列 Mac 打开，不需要保留更早的版本或重新取得微信密钥。
 
 归档阅读库以只读方式打开，媒体会校验完整性。ZIP 没有额外密码加密，拿到文件的人可以读取其中的聊天和媒体，请按私人文件保存。
 

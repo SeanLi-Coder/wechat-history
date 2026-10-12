@@ -1,4 +1,4 @@
-name: Build portable macOS installers
+name: Build Apple Silicon macOS installers
 
 on:
   workflow_dispatch:
@@ -13,16 +13,8 @@ permissions:
 
 jobs:
   build:
-    name: macOS 15 / ${{ matrix.arch }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+    name: macOS 15 / arm64
+    runs-on: macos-15
     timeout-minutes: 90
     env:
       BUILD_REF: ${{ inputs.ref }}
@@ -40,11 +32,9 @@ jobs:
           persist-credentials: false
       - name: Verify source and native architecture
         shell: bash
-        env:
-          BUILD_ARCH: ${{ matrix.arch }}
         run: |
           test "$(git rev-parse HEAD)" = "$BUILD_REF"
-          test "$(uname -m)" = "$BUILD_ARCH"
+          test "$(uname -m)" = "arm64"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -52,20 +42,20 @@ jobs:
         run: >-
           python3 scripts/build_tools.py
           --output dist/portable-tools
-          --arch ${{ matrix.arch }}
+          --arch arm64
           --min-macos 15.0
           --cache dist/portable-cache
       - name: Build and verify the portable application
         run: >-
           python3 scripts/build_portable.py
-          --arch ${{ matrix.arch }}
+          --arch arm64
           --tools dist/portable-tools
           --output-dir dist/installers
           --cache dist/portable-cache
       - name: Upload verified installers and source materials
         uses: actions/upload-artifact@v4
         with:
-          name: shiliao-macos-${{ matrix.arch }}
+          name: shiliao-macos-arm64
           path: dist/installers/
           if-no-files-found: error
           retention-days: 14
