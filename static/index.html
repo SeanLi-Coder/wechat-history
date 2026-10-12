@@ -64,6 +64,7 @@
         <header class="reader-topbar">
           <div class="reader-topbar-title"><h1 id="reader-heading">聊天</h1><span class="reader-source-chip" id="reader-source-chip">本机记录</span></div>
           <div class="reader-topbar-actions">
+            <button class="button reader-import-button" data-action="reader-import" title="导入可读归档或文字聊天记录"><span class="icon" data-icon="upload"></span><span>导入</span></button>
             <button class="button reader-export-button" data-action="reader-export" title="导出当前数据源的全部聊天与媒体"><span class="icon" data-icon="archive"></span><span>导出全部</span></button>
             <button class="text-button reader-open-button" data-action="reader-open" title="打开压缩归档"><span class="icon" data-icon="folder"></span><span>打开归档</span></button>
             <button class="text-button" data-action="reader-live" title="返回本机记录" hidden><span class="icon" data-icon="monitor"></span><span>返回本机</span></button>
@@ -73,7 +74,7 @@
                 <div class="reader-management-heading"><h2>聊天与归档管理</h2><button class="icon-button" data-action="close-reader-management" aria-label="收起管理面板"><span class="icon" data-icon="close"></span></button></div>
                 <div class="reader-archive-toolbar"><div class="reader-source"><span class="icon" data-icon="archive"></span><div><strong id="reader-source-title">本机记录</strong><p id="reader-source-description">聊天和可用媒体保存在本机，备份时一并保存可读归档。</p></div></div></div>
                 <div class="info-note wechat-connect"><span class="icon" data-icon="lock"></span><div><strong>读取本机微信聊天</strong><p id="wechat-key-status">正在检查本机读取状态…</p><div class="wechat-connect-actions"><button class="button button-dark" data-action="read-wechat"><span class="icon" data-icon="refresh"></span>读取 / 更新聊天</button><button class="text-button" data-action="import-keys">导入已有密钥文件</button></div></div></div>
-                <div class="reader-intro" id="reader-intro"><div><h3>导入可读聊天记录</h3><p>支持 ChatLab JSON / JSONL、通用 JSON / CSV / TXT，单个文件最多 100 MB。</p></div><div class="reader-import-actions"><button class="button button-outline" data-action="import"><span class="icon" data-icon="upload"></span>导入聊天记录</button><button class="text-button" data-action="demo">试读示例<span class="icon" data-icon="arrow-right"></span></button></div></div>
+                <div class="reader-intro" id="reader-intro"><div><h3>导入可读聊天记录</h3><p>顶部「导入」支持合并拾聊 ZIP 归档，或导入 JSON / JSONL / CSV / TXT 文字记录。</p></div><div class="reader-import-actions"><button class="text-button" data-action="demo">试读示例<span class="icon" data-icon="arrow-right"></span></button></div></div>
               </div>
             </details>
           </div>
@@ -101,6 +102,17 @@
     </main>
   </div>
   <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="false"></div>
+  <dialog id="reader-import-dialog" class="manifest-dialog export-dialog import-dialog" aria-labelledby="import-title" aria-describedby="import-scope-note">
+    <div class="dialog-heading"><div><p class="eyebrow">BRING YOUR CONVERSATIONS HOME</p><h2 id="import-title">导入聊天记录</h2></div><button type="button" class="icon-button" data-action="import-close" aria-label="关闭导入窗口"><span class="icon" data-icon="close"></span></button></div>
+    <p id="import-scope-note" class="export-scope-note">合并到本机记录，保留已有内容，跳过重复消息。导入完成后自动返回本机查看。</p>
+    <section class="import-method" aria-labelledby="import-archive-title"><div class="import-method-heading"><span class="icon" data-icon="archive"></span><div><h3 id="import-archive-title">拾聊可读 ZIP 归档</h3><p>完整导入消息与已保存的图片、语音、视频、头像及原件。</p></div></div><button type="button" class="button button-outline" data-action="import-pick-archive"><span class="icon" data-icon="folder"></span>选择 ZIP 归档</button><p class="field-help">直接从本机磁盘读取，不受文字文件 100 MB 限制。只想浏览、不合并时，可用顶部「打开归档」。微信原始备份 ZIP 需要先整理为可读归档。</p></section>
+    <div id="import-preview" hidden><p class="export-source-label">待导入归档</p><p id="import-source" class="export-source"></p><div class="export-stats" id="import-stats" aria-label="归档全部内容"></div><p id="import-media-detail" class="export-media-detail"></p><p id="import-unavailable" class="export-unavailable"></p><p id="import-disk" class="import-disk"></p></div>
+    <div id="import-progress" class="export-progress" role="status" hidden><strong id="import-progress-label">正在读取归档信息…</strong><progress id="import-progress-bar" max="100" aria-label="归档导入进度"></progress><p id="import-progress-detail"></p><p id="import-background-note">可关闭此窗口，导入会继续进行；再次点击「导入」查看进度。</p></div>
+    <div id="import-result" class="export-result" role="status" hidden><h3>已合并到本机记录</h3><p id="import-result-summary"></p><p id="import-result-duplicates"></p><button type="button" class="button button-outline" data-action="import-view">查看本机聊天</button></div>
+    <p id="import-error" class="export-error" role="alert" hidden></p>
+    <details id="import-text-method" class="import-method import-text-method" open><summary class="import-method-heading"><span class="icon" data-icon="file"></span><div><h3>文字聊天文件</h3><p>JSON / JSONL / CSV / TXT · 最多 100 MB</p></div></summary><button type="button" class="button button-outline" data-action="import"><span class="icon" data-icon="upload"></span>选择文字文件</button><p id="import-text-status" class="field-help" role="status">支持 ChatLab 和通用文字导出；完整媒体请使用拾聊可读 ZIP。</p></details>
+    <div class="export-actions"><button type="button" class="text-button" data-action="import-close">关闭</button><button type="button" class="button button-dark" id="import-start" data-action="import-start" hidden><span class="icon" data-icon="upload"></span>开始合并到本机</button></div>
+  </dialog>
   <dialog id="reader-export-dialog" class="manifest-dialog export-dialog" aria-labelledby="export-title" aria-describedby="export-scope-note">
     <div class="dialog-heading"><div><p class="eyebrow">KEEP EVERY CONVERSATION</p><h2 id="export-title">导出全部聊天与媒体</h2></div><button type="button" class="icon-button" data-action="export-close" aria-label="关闭导出窗口"><span class="icon" data-icon="close"></span></button></div>
     <p class="export-source-label">当前数据源</p><p id="export-source" class="export-source">正在读取…</p>

@@ -58,7 +58,7 @@ def serve_fixture(state: Path) -> None:
     original_post = app.Handler.do_POST
 
     def fixture_post(handler):
-        if urlsplit(handler.path).path in {"/api/pick-folder", "/api/wechat/import", "/api/wechat/keys", "/api/reader/export/reveal"}:
+        if urlsplit(handler.path).path in {"/api/pick-folder", "/api/pick-archive", "/api/pick-import-archive", "/api/wechat/import", "/api/wechat/keys", "/api/reader/export/reveal"}:
             return handler.response({"error": "System actions are disabled in browser fixtures"}, 405)
         return original_post(handler)
 
@@ -616,7 +616,7 @@ def check_synthetic_media(page, work: Path, state: Path, checks: list) -> None:
     page.locator("#messages-scroll").evaluate("element => { element.scrollTop = 0; }")
 
 
-def check_readable_archive(page, work: Path, state: Path, job_finished, checks: list, avatars: dict, artifacts: Path) -> None:
+def check_readable_archive(page, work: Path, state: Path, job_finished, checks: list, avatars: dict, artifacts: Path) -> Path:
     """Prove a saved ZIP can play media after every original fixture is deleted."""
     page.unroute("**/api/conversations/*/messages?*")
     clear_toasts(page)
@@ -780,6 +780,232 @@ def check_readable_archive(page, work: Path, state: Path, job_finished, checks: 
     checks.append("readable_zip_shows_avatars_after_original_source_and_store_removal")
     page.locator("#messages-scroll").evaluate("element => { element.scrollTop = 0; }")
     clear_toasts(page)
+    return copied
+
+
+def check_archive_import(page, work: Path, state: Path, archive: Path, job_finished, api_get,
+                         checks: list, avatars: dict, artifacts: Path) -> None:
+    """Merge only disposable archives, with no native file picker or production data."""
+    from vault.library import Library
+    from vault.readable_archive import create_archive
+
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    page.locator("#reader-management").evaluate("node => { node.open = false; }")
+    selected = {"path": str(archive)}
+    page.route("**/api/pick-import-archive", lambda route: route.fulfill(json=selected))
+    top_import = page.locator('.reader-topbar [data-action="reader-import"]')
+    expect(top_import).to_be_visible()
+    configuration = (state / "config.json").read_bytes()
+
+    def preview():
+        if not page.locator("#reader-import-dialog").evaluate("node => node.open"):
+            top_import.click()
+        with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/import-info") as response:
+            page.locator('[data-action="import-pick-archive"]').click()
+        return response.value
+
+    def start(info, hold=False):
+        if hold:
+            pending = []
+            page.route("**/api/reader/import", lambda route: pending.append((route, route.fetch())))
+            page.locator("#import-start").click()
+            deadline = time.monotonic() + 10
+            while not pending and time.monotonic() < deadline:
+                page.wait_for_timeout(50)
+            assert pending, "The synthetic archive import did not start"
+            expect(page.locator("#import-progress")).to_be_visible()
+            page.keyboard.press("Escape")
+            top_import.click()
+            expect(page.locator("#import-progress")).to_be_visible()
+            expect(page.locator("#import-start")).to_be_hidden()
+            route, response = pending.pop()
+            with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/import") as imported:
+                route.fulfill(response=response)
+            page.unroute("**/api/reader/import")
+        else:
+            with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/import") as imported:
+                page.locator("#import-start").click()
+        assert imported.value.status == 202
+        body = imported.value.request.post_data_json
+        assert body == {"path": selected["path"], "preview_id": info["preview_id"]}
+        assert len(imported.value.request.post_data) < 4096, "ZIP bytes were uploaded through the browser"
+        result = job_finished("reader_import")
+        expect(page.locator("#import-result")).to_be_visible()
+        expect(page.locator("#reader-source-title")).to_have_text("本机记录")
+        assert not api_get("/api/status")["reader_source"]["archived"]
+        return result
+
+    # Keep the archive view active while importing back into the local library.
+    with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/archive"):
+        page.locator('[data-action="reader-open"]').click()
+    job_finished("reader_open")
+    expect(page.locator("#reader-source-title")).to_contain_text(archive.name)
+    apply_date_search(page, "global", "中午", "2024-01-01", "2024-01-01")
+    expect(page.locator(".search-message-result")).to_have_count(1)
+    response = preview()
+    assert response.status == 200
+    info = response.json()
+    assert info["summary"]["messages"] == 114
+    expect(page.locator("#import-stats")).to_contain_text("114")
+    expect(page.locator("#import-unavailable")).to_contain_text("1 条媒体缺失或暂不可用")
+    expect(page.locator("#import-disk")).to_contain_text("本机磁盘空间")
+    expect(page.locator("#import-scope-note")).to_contain_text("保留已有内容")
+    page.screenshot(path=str(artifacts / "import-desktop.png"))
+    page.set_viewport_size({"width": 400, "height": 900})
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    assert page.evaluate("document.documentElement.scrollWidth === 400")
+    assert page.locator("#reader-import-dialog").evaluate("node => node.scrollWidth <= node.clientWidth")
+    page.screenshot(path=str(artifacts / "import-mobile.png"))
+    page.locator("#import-start").scroll_into_view_if_needed()
+    page.screenshot(path=str(artifacts / "import-mobile-actions.png"))
+    page.set_viewport_size({"width": 1440, "height": 1000})
+
+    def insufficient_preview(route):
+        response = route.fetch()
+        payload = response.json()
+        payload["available_bytes"] = 0
+        payload["unverified_media"] = 2
+        route.fulfill(response=response, json=payload)
+
+    page.route("**/api/reader/import-info", insufficient_preview)
+    preview()
+    expect(page.locator("#import-error")).to_contain_text("本机可用空间不足")
+    expect(page.locator("#import-start")).to_be_disabled()
+    expect(page.locator("#import-unavailable")).to_contain_text("2 项旧版微信媒体缺少版本校验信息")
+    expect(page.locator("#import-media-detail")).to_contain_text("部分关联待确认")
+    page.unroute("**/api/reader/import-info", insufficient_preview)
+    info = preview().json()
+    expect(page.locator("#import-error")).to_be_hidden()
+    expect(page.locator("#import-unavailable")).not_to_contain_text("缺少版本校验信息")
+    checks.append("archive_import_disables_merge_when_preview_reports_insufficient_disk_space")
+    result = start(info, hold=True)
+    assert result["added"]["messages"] == 0 and result["skipped"]["messages"] == 114
+    expect(page.locator("#import-result-duplicates")).to_contain_text("114 条重复消息")
+    expect(page.locator("#conversation-search")).to_have_value("")
+    expect(page.locator("#global-date-from")).to_have_value("")
+    assert Library(state).stats()["messages"] == 114
+    checks.append("archive_import_uses_path_preview_and_merges_into_local_without_duplicate_messages")
+    checks.append("archive_import_progress_survives_close_reopen_and_clears_archive_filters_on_completion")
+    checks.append("archive_import_preview_and_actions_fit_400px_without_zip_browser_upload")
+
+    def legacy_import_status(route):
+        response = route.fetch()
+        payload = response.json()
+        if payload.get("job", {}).get("type") == "reader_import":
+            payload["job"]["result"]["unverified_media"] = 2
+        route.fulfill(response=response, json=payload)
+
+    page.route("**/api/status", legacy_import_status)
+    with page.expect_response(lambda response: urlsplit(response.url).path == "/api/status"):
+        page.reload(wait_until="domcontentloaded")
+    go_to(page, "reader")
+    top_import.click()
+    expect(page.locator("#import-result")).to_be_visible()
+    expect(page.locator("#import-result-duplicates")).to_contain_text("114 条重复消息")
+    expect(page.locator("#import-result-summary")).to_contain_text("2 项旧版微信媒体缺少版本校验信息，原件已保留")
+    expect(page.locator("#import-result-summary")).to_contain_text("未经确认的关联暂不显示")
+    page.unroute("**/api/status", legacy_import_status)
+    checks.append("legacy_unverified_media_is_explicit_in_preview_and_import_completion")
+    page.keyboard.press("Escape")
+    expect(top_import).to_be_focused()
+    checks.append("archive_import_completion_restores_after_reload_and_keyboard_close_restores_focus")
+
+    # Include new records, shared media and an additional compressed original.
+    fixture = work / "new-import-fixture"
+    fixture.mkdir()
+    incoming = Library(fixture / "state")
+    literal = '<img src=x onerror="window.__importXss=true"> Imported fixture text'
+    incoming.import_file(json.dumps({"title": "合成导入 · 新会话", "messages": [
+        {"sender": "归档好友", "text": literal, "timestamp": "2025-06-02T13:14:00+08:00"}
+    ]}).encode(), "new-fixture.json")
+    conversation = incoming.conversations()["conversations"][0]
+    message_id = incoming.messages(conversation["id"])["messages"][0]["id"]
+    for name, (mime, data) in synthetic_media(fixture).items():
+        path = fixture / name
+        path.write_bytes(data)
+        kind = name.removeprefix("smoke-")
+        asset = incoming.media.store_file(path, kind, mime, filename=name)
+        incoming.media.link(message_id, kind, asset)
+    fresh_avatars = seed_synthetic_avatars(incoming, fixture, conversation["id"], [message_id])
+    original = fixture / "original.dat"
+    original.write_bytes(b"New synthetic original archive attachment\n" * 4096)
+    incoming.media.store_file(original, "original", "application/octet-stream", filename=original.name)
+    saved = create_archive(incoming, fixture / "archives")
+    incoming_zip = Path(saved["path"]).with_name("synthetic-<img src=x onerror=window.__importXss=true>.zip")
+    Path(saved["path"]).rename(incoming_zip)
+    selected["path"] = str(incoming_zip)
+    response = preview()
+    assert response.status == 200
+    expect(page.locator("#import-source")).to_have_text(incoming_zip.name)
+    expect(page.locator("#import-source img")).to_have_count(0)
+    result = start(response.json())
+    assert result["added"]["messages"] == 1 and result["added"]["conversations"] == 1
+    assert Library(state).stats()["messages"] == 115
+    expect(page.locator("#import-result-summary")).to_contain_text("1 条消息")
+    checks.append("archive_import_preserves_existing_records_and_treats_untrusted_names_as_text")
+    response = preview()
+    result = start(response.json())
+    assert result["added"]["messages"] == 0 and result["skipped"]["messages"] == 1
+    assert Library(state).stats()["messages"] == 115
+    expect(page.locator("#import-result-duplicates")).to_contain_text("1 条重复消息")
+    checks.append("repeated_archive_import_skips_existing_messages_and_media")
+    incoming_zip.unlink()
+    archive.unlink()
+    shutil.rmtree(fixture)
+    shutil.rmtree(state / "opened-archives")
+    session = page.context.new_cdp_session(page)
+    session.send("Network.clearBrowserCache")
+    session.detach()
+    page.locator('[data-action="import-view"]').click()
+    page.locator('[data-action="select-conversation"]').filter(has_text="合成导入 · 新会话").click()
+    expect(page.locator(".message-bubble")).to_contain_text(literal)
+    assert not page.evaluate("Boolean(window.__importXss)")
+    expect_avatar(page.locator("#conversation-header-avatar"), fresh_avatars["conversation"])
+    expect_avatar(page.locator(".message-avatar"), fresh_avatars["sender"])
+    wait_until(lambda: page.locator(".message-image").evaluate("node => node.naturalWidth === 960"), "imported image decoding")
+    for kind in ("audio", "video"):
+        player = page.locator(f"{kind}.media-player")
+        wait_until(lambda: player.evaluate("node => node.readyState >= 1"), "imported media metadata")
+        player.evaluate("async node => { await node.play(); node.pause(); node.currentTime = 0.5; }")
+        assert player.evaluate("node => Math.abs(node.currentTime - 0.5) < 0.1")
+    assert list((state / "media/objects").glob("*/*.gz")), "Compressed originals were not imported"
+    checks.append("imported_images_audio_video_avatars_and_compressed_originals_survive_zip_and_cache_removal")
+
+    invalid = work / "invalid-import.zip"
+    invalid.write_bytes(b"This is not a readable archive")
+    selected["path"] = str(invalid)
+    before = Library(state).stats()
+    response = preview()
+    assert response.status == 400
+    expect(page.locator("#import-error")).to_be_visible()
+    expect(page.locator("#import-start")).to_be_hidden()
+    expect(page.locator("#import-preview")).to_be_hidden()
+    assert Library(state).stats() == before
+    checks.append("invalid_archive_preview_clears_stale_preview_and_leaves_local_records_unchanged")
+
+    text_file = work / "import-text.txt"
+    text_file.write_text("[2025-01-01 08:00:00] Fixture sender: Synthetic text import remains available", encoding="utf-8")
+    page.locator("#import-text-method > summary").click()
+    with page.expect_file_chooser() as chooser:
+        page.locator('[data-action="import"]').click()
+    with page.expect_response(lambda response: urlsplit(response.url).path == "/api/import") as response:
+        chooser.value.set_files(text_file)
+    assert response.value.status == 200
+    expect(page.locator("#import-text-status")).to_contain_text("文字导入完成")
+    expect(page.locator('[data-action="import"]')).to_be_enabled()
+    assert Library(state).stats()["messages"] == 116
+    page.locator("#import-file").evaluate("""node => {
+        const file = new File(['synthetic'], 'too-large.txt', {type:'text/plain'});
+        Object.defineProperty(file, 'size', {value: 100 * 1024 * 1024 + 1});
+        Object.defineProperty(node, 'files', {value: [file], configurable:true});
+        node.dispatchEvent(new Event('change', {bubbles:true}));
+        delete node.files;
+    }""")
+    expect(page.locator("#import-text-status")).to_contain_text("文件超过 100 MB")
+    assert Library(state).stats()["messages"] == 116
+    page.keyboard.press("Escape")
+    assert (state / "config.json").read_bytes() == configuration
+    checks.append("text_import_remains_available_in_import_dialog_with_100mb_limit_and_unchanged_settings")
 
 
 def redact(value: object, token: str = "") -> str:
@@ -1086,7 +1312,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     media_screenshot = artifacts / "media.png"
                     page.screenshot(path=str(media_screenshot), full_page=True)
                     screenshots.append(str(media_screenshot))
-                    check_readable_archive(page, work, state, job_finished, checks, avatars, artifacts)
+                    readable_archive = check_readable_archive(page, work, state, job_finished, checks, avatars, artifacts)
                     apply_date_search(page, "global", date_from="2024-01-01", date_to="2024-01-01")
                     expect(page.locator(".search-message-result")).to_have_count(3)
                     page.locator(".search-message-result").filter(has_text="日期边界 开始").click()
@@ -1123,6 +1349,9 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     expect(page.locator('[data-action="reader-export"]')).to_be_visible()
                     assert not api_get("/api/status")["reader_source"]["archived"]
                     checks.append("return_from_archive_to_live_library")
+
+                    check_archive_import(page, work, state, readable_archive, job_finished, api_get,
+                                         checks, avatars, artifacts)
 
                     final_config = api_get("/api/config")
                     assert final_config["schedule_enabled"] is False, "Scheduling changed during the test."

@@ -52,8 +52,8 @@ def build_app(bundle=None, python_executable=None):
             bytecode.unlink()
         configuration = {
             "CFBundleName": "拾聊", "CFBundleDisplayName": "拾聊", "CFBundleExecutable": "Shiliao",
-            "CFBundleIdentifier": BUNDLE_ID, "CFBundleVersion": "7",
-            "CFBundleIconFile": "AppIcon", "CFBundleShortVersionString": "0.5.0",
+            "CFBundleIdentifier": BUNDLE_ID, "CFBundleVersion": "8",
+            "CFBundleIconFile": "AppIcon", "CFBundleShortVersionString": "0.6.0",
             "CFBundlePackageType": "APPL", "LSUIElement": True, "NSHighResolutionCapable": True,
             "NSAppDataUsageDescription": "读取你选择的微信账号文件夹，在本机备份并阅读聊天与媒体；不会修改微信原始数据。",
             "NSDocumentsFolderUsageDescription": "Save local WeChat backups to the selected folder.",

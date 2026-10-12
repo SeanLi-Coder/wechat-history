@@ -58,6 +58,9 @@ const state = {
   readerExport: null,
   exportRequest: 0,
   exportTrigger: null,
+  readerImport: null,
+  importRequest: 0,
+  importTrigger: null,
 };
 
 function icon(name, className = "icon") {
@@ -483,19 +486,19 @@ function renderJob(job) {
     const total = Number(progress.total_bytes) || Number(progress.total_files) || 0;
     const done = Number(progress.total_bytes) ? Number(progress.done_bytes) || 0 : Number(progress.done_files) || 0;
     const percent = total ? Math.min(100, Math.max(0, Math.round(done / total * 100))) : 0;
-    const jobLabels = { verify: "正在校验归档完整性…", wechat_import: "正在整理聊天和媒体…", reader_export: "正在保存聊天与媒体归档…", reader_open: "正在打开压缩归档…" };
+    const jobLabels = { verify: "正在校验归档完整性…", wechat_import: "正在整理聊天和媒体…", reader_export: "正在保存聊天与媒体归档…", reader_open: "正在打开压缩归档…", reader_import: "正在合并归档到本机…" };
     top.append(element("strong", "", jobLabels[job.type] || "正在把对话好好收藏…"), element("span", "", total ? `${percent}%` : progress.media ? `已处理 ${count(done)} 条` : "准备中"));
     const track = element("div", "progress-track");
     track.setAttribute("role", "progressbar");
-    track.setAttribute("aria-label", job.type === "verify" ? "校验进度" : ["wechat_import", "reader_export", "reader_open"].includes(job.type) ? "读取与归档进度" : "备份进度");
+    track.setAttribute("aria-label", job.type === "verify" ? "校验进度" : ["wechat_import", "reader_export", "reader_open", "reader_import"].includes(job.type) ? "读取与归档进度" : "备份进度");
     track.setAttribute("aria-valuemin", "0");
     track.setAttribute("aria-valuemax", "100");
     if (total) track.setAttribute("aria-valuenow", String(percent));
     const fill = element("div", "progress-fill");
     fill.style.width = `${total ? percent : 5}%`;
     track.append(fill);
-    const currentFile = ["wechat_import", "reader_export", "reader_open"].includes(job.type) ? readerProgressLabel(progress.current_file) : progress.current_file;
-    const detail = progress.media ? currentFile || "正在整理媒体文件…" : job.type === "verify" && !progress.total_files ? "正在读取归档并计算每个文件的 SHA-256…" : !progress.total_files ? currentFile || "正在检查数据目录…" : `${count(progress.done_files)} / ${count(progress.total_files)} 个文件${currentFile ? ` · ${currentFile}` : " · 正在检查数据目录"}`;
+    const currentFile = ["wechat_import", "reader_export", "reader_open", "reader_import"].includes(job.type) ? readerProgressLabel(progress.current_file) : progress.current_file;
+    const detail = job.type === "reader_import" ? importProgressDetail(progress) : progress.media ? currentFile || "正在整理媒体文件…" : job.type === "verify" && !progress.total_files ? "正在读取归档并计算每个文件的 SHA-256…" : !progress.total_files ? currentFile || "正在检查数据目录…" : `${count(progress.done_files)} / ${count(progress.total_files)} 个文件${currentFile ? ` · ${currentFile}` : " · 正在检查数据目录"}`;
     panel.append(top, track, element("p", "job-detail", detail));
     if (progress.snapshot_ready) {
       panel.append(element("p", "job-detail", "聊天快照已完成，可以继续使用微信；媒体整理期间请暂勿清理微信文件。"));
@@ -505,9 +508,10 @@ function renderJob(job) {
 
 function updateJobButtons() {
   const running = state.status?.job?.status === "running";
-  document.querySelectorAll('[data-action="backup"], [data-action="verify"], [data-action="read-wechat"], [data-action="reader-export"], [data-action="reader-open"], [data-action="reader-live"]').forEach((button) => {
+  document.querySelectorAll('[data-action="backup"], [data-action="verify"], [data-action="read-wechat"], [data-action="reader-export"], [data-action="reader-import"], [data-action="reader-open"], [data-action="reader-live"]').forEach((button) => {
     const canInspectExport = button.dataset.action === "reader-export" && state.status?.job?.type === "reader_export";
-    button.disabled = (running && !canInspectExport) || Boolean(button.dataset.loading);
+    const canInspectImport = button.dataset.action === "reader-import" && state.status?.job?.type === "reader_import";
+    button.disabled = (running && !canInspectExport && !canInspectImport) || Boolean(button.dataset.loading);
     if (running) button.title = "请等待当前任务完成";
     else if (button.title === "请等待当前任务完成") button.removeAttribute("title");
   });
@@ -590,9 +594,15 @@ function renderStatus(status) {
   renderJob(status.job);
   updateJobButtons();
   renderExportDialog();
+  renderImportDialog();
 }
 
 function observeJob(job) {
+  if (job?.type === "reader_import" && state.readerImport?.jobId === job.id) {
+    state.readerImport.job = job;
+    if (job.status === "done") state.readerImport.result = job.result || {};
+    if (job.status === "error") state.readerImport.error = localizeError(job.error, job.code);
+  }
   if (job?.type === "reader_export" && state.readerExport?.jobId === job.id) {
     state.readerExport.job = job;
     if (job.status === "done") state.readerExport.result = job.result || {};
@@ -625,6 +635,9 @@ function observeJob(job) {
     } else if (job.type === "wechat_import") {
       toast(`微信记录已导入，新增 ${count(job.result?.messages)} 条消息。`);
       refreshReaderContents();
+    } else if (job.type === "reader_import") {
+      toast(`归档已合并到本机，新增 ${count(job.result?.added?.messages)} 条消息，跳过 ${count(job.result?.skipped?.messages)} 条重复消息。`);
+      resetReaderSource();
     } else if (job.type === "reader_export") {
       toast(`全部导出完成：${count(job.result?.summary?.messages)} 条消息。点击「导出全部」查看 ZIP。`);
     } else if (job.type === "reader_open") {
@@ -960,6 +973,132 @@ async function refreshReaderContents() {
   if (state.conversationId) await loadMessages(false);
 }
 
+function importProgressDetail(progress = {}) {
+  if (progress.phase === "messages") return `正在合并聊天记录 · 已处理 ${count(progress.done_messages)} 条消息`;
+  if (progress.phase === "committing") return "正在保存合并结果，请稍候…";
+  if (progress.total_files) return `正在复制并校验媒体 · ${count(progress.done_files)} / ${count(progress.total_files)} 个文件`;
+  return progress.current_file ? readerProgressLabel(progress.current_file) : "正在准备聊天与媒体，较大的归档需要一些时间。";
+}
+
+function renderImportDialog() {
+  const run = state.readerImport;
+  if (!run) return;
+  const result = run.result;
+  const info = run.info;
+  const summary = info?.summary || result?.summary;
+  const unverified = Number(result?.unverified_media ?? info?.unverified_media) || 0;
+  const unverifiedNote = unverified ? `有 ${count(unverified)} 项旧版微信媒体缺少版本校验信息，原件${result ? "已" : "会"}保留，未经确认的关联暂不显示。` : "";
+  const running = Boolean((run.starting || run.jobId) && !result && !run.error);
+  const busy = running || run.loading || state.importing;
+  const otherJob = state.status?.job?.status === "running" && state.status.job.id !== run.jobId;
+  $("import-preview").hidden = !summary;
+  $("import-source").textContent = info?.filename || result?.source?.name || "可读归档";
+  $("import-stats").replaceChildren();
+  [["归档会话", summary?.conversations], ["归档消息", summary?.messages],
+    ["去重媒体文件", summary?.media?.unique_objects], ["可用头像", summary?.avatars?.ready]].forEach(([label, value]) => {
+    const card = element("div", "export-stat");
+    card.append(element("strong", "", value === undefined ? "—" : count(value)), element("span", "", label));
+    $("import-stats").append(card);
+  });
+  const items = summary?.media?.items || [];
+  const readyCount = kind => items.filter(item => item.kind === kind && item.status === "ready").reduce((total, item) => total + (Number(item.count) || 0), 0);
+  $("import-media-detail").textContent = `${unverified ? "归档中标记可用的媒体（部分关联待确认）" : "可用聊天媒体"}：图片 ${count(readyCount("image"))} · 语音 ${count(readyCount("audio"))} · 视频 ${count(readyCount("video"))}。媒体原始体积 ${formatBytes(summary?.media?.original_bytes)}。`;
+  const unavailable = Number(summary?.unavailable_media) || items.filter(item => item.status !== "ready").reduce((total, item) => total + (Number(item.count) || 0), 0);
+  const stale = Number(summary?.media?.stale_links) || 0;
+  $("import-unavailable").textContent = `${unverifiedNote}${unavailable ? `有 ${count(unavailable)} 条媒体缺失或暂不可用，会保留对应说明。` : ""}${stale ? `另有 ${count(stale)} 条媒体关联等待重新整理。` : ""}仅导入这份归档已保存的内容；缺失媒体不会自动补回，已有本机记录不会被覆盖。`;
+  $("import-disk").hidden = !info || Boolean(result);
+  $("import-disk").textContent = info ? `合并到${info.destination_label || "本机记录"}。预计需预留 ${formatBytes(info.required_bytes)} 本机磁盘空间${info.available_bytes === undefined ? "" : `，当前可用 ${formatBytes(info.available_bytes)}`}。实际新增体积取决于去重结果。无需退出微信。` : "";
+  const insufficient = info && Number(info.available_bytes) < Number(info.required_bytes);
+  $("import-progress").hidden = !running && !run.loading;
+  $("import-background-note").hidden = !running;
+  if (running || run.loading) {
+    const progress = run.job?.progress || {};
+    const total = Number(progress.total_files) || 0;
+    if (total) $("import-progress-bar").value = Math.min(100, (Number(progress.done_files) || 0) / total * 100);
+    else $("import-progress-bar").removeAttribute("value");
+    $("import-progress-label").textContent = running ? "正在合并归档到本机…" : "正在检查归档与磁盘空间…";
+    $("import-progress-detail").textContent = running
+      ? importProgressDetail(progress)
+      : "只读取归档信息，点击「开始合并到本机」后才会导入。";
+  }
+  $("import-result").hidden = !result;
+  if (result) {
+    $("import-result-summary").textContent = `新增 ${count(result.added?.conversations)} 个会话、${count(result.added?.messages)} 条消息、${count(result.added?.objects)} 个媒体文件、${count(result.added?.avatars)} 个头像。${result.added?.media_links ? `新增或补齐 ${count(result.added.media_links)} 条媒体关联。` : ""}${unverifiedNote}已保存到本机，移走原 ZIP 后仍可阅读。`;
+    $("import-result-duplicates").textContent = `${result.duplicate ? "这份归档已导入过。" : ""}跳过 ${count(result.skipped?.messages)} 条重复消息、${count(result.skipped?.objects)} 个重复媒体文件；已有内容保留。`;
+  }
+  $("import-error").hidden = !run.error && !insufficient;
+  $("import-error").textContent = run.error || (insufficient ? "本机可用空间不足，请释放磁盘空间后重新选择归档。" : "");
+  $("import-start").hidden = !info || running || Boolean(result);
+  $("import-start").disabled = Boolean(busy || otherJob || insufficient);
+  document.querySelector('[data-action="import-pick-archive"]').disabled = Boolean(busy || otherJob);
+  document.querySelector('[data-action="import"]').disabled = Boolean(busy || otherJob);
+}
+
+function openImportDialog(button) {
+  if (button?.dataset.action === "reader-import") state.importTrigger = button;
+  $("reader-management").open = false;
+  if (!state.readerImport) {
+    const job = state.status?.job;
+    state.readerImport = job?.type === "reader_import"
+      ? { jobId: job.id, job, result: job.status === "done" ? job.result : null, error: job.status === "error" ? localizeError(job.error, job.code) : "" }
+      : {};
+  }
+  renderImportDialog();
+  if (!$("reader-import-dialog").open) $("reader-import-dialog").showModal();
+}
+
+async function pickImportArchive(button) {
+  await withBusy(button, async () => {
+    try {
+      const selection = await api("/api/pick-import-archive", { method: "POST", body: {} });
+      if (!selection.path) return;
+      const request = ++state.importRequest;
+      state.readerImport = { path: selection.path, loading: true };
+      $("import-text-method").open = false;
+      renderImportDialog();
+      try {
+        const info = await api("/api/reader/import-info", { method: "POST", body: { path: selection.path } });
+        if (request !== state.importRequest) return;
+        state.readerImport.info = info;
+      } catch (error) {
+        if (request === state.importRequest) state.readerImport.error = error.message;
+      } finally {
+        if (request === state.importRequest) state.readerImport.loading = false;
+      }
+    } catch (error) { state.readerImport.error = error.message; }
+  }, "选择归档…");
+  renderImportDialog();
+}
+
+async function startImportArchive(button) {
+  const run = state.readerImport;
+  if (!run?.info || run.loading || run.starting || state.importing || (run.jobId && !run.result && !run.error)) return;
+  await withBusy(button, async () => {
+    run.error = "";
+    run.jobId = null;
+    run.job = null;
+    run.starting = true;
+    renderImportDialog();
+    try {
+      const response = await api("/api/reader/import", { method: "POST", body: { path: run.path, preview_id: run.info.preview_id } });
+      run.jobId = response.job_id;
+      run.job = { id: response.job_id, type: "reader_import", status: "running" };
+      state.lastRunningJob = run.job;
+      await refreshStatus({ silent: true });
+    } catch (error) { run.error = error.message; }
+    finally { run.starting = false; }
+  }, "正在开始…");
+  renderImportDialog();
+}
+
+async function viewImportedRecords() {
+  $("reader-import-dialog").close();
+  if (state.status?.reader_source?.archived) await api("/api/reader/live", { method: "POST", body: {} });
+  await refreshStatus({ silent: true });
+  await resetReaderSource();
+  if (state.conversations.length) await selectConversation(state.conversations[0].id);
+}
+
 function renderExportDialog() {
   const run = state.readerExport;
   if (!run) return;
@@ -1114,7 +1253,7 @@ function renderReaderEmpty() {
   $("messages-header").hidden = true;
   $("message-context-bar").hidden = true;
   const hasConversations = Boolean(state.conversations.length);
-  $("message-list").replaceChildren(emptyState("chat", hasConversations ? "选一段对话，慢慢重温" : "聊天记录，妥善收藏", hasConversations ? "从左侧选择会话，查看聊天记录与媒体。这里是只读归档，不能发送消息。" : "打开一份可读压缩归档，或在右上角「管理」中读取本机聊天、导入聊天记录。", hasConversations ? null : actionButton("管理聊天记录", "open-reader-management", "button button-outline", "folder")));
+  $("message-list").replaceChildren(emptyState("chat", hasConversations ? "选一段对话，慢慢重温" : "聊天记录，妥善收藏", hasConversations ? "从左侧选择会话，查看聊天记录与媒体。这里是只读归档，不能发送消息。" : "点击顶部「导入」合并聊天归档或文字文件，也可以打开归档直接浏览。", hasConversations ? null : actionButton("导入聊天记录", "reader-import", "button button-outline", "upload")));
 }
 
 function prepareConversation(id) {
@@ -1418,15 +1557,24 @@ function openImagePreview(media, url) {
 
 async function importFile(file) {
   if (!file || state.importing) return;
+  if (state.status?.job?.status === "running" || state.readerImport?.starting || state.readerImport?.loading) {
+    toast("请等待当前任务完成后再导入文字文件。", true);
+    return;
+  }
   if (!/\.(json|jsonl|csv|txt)$/i.test(file.name)) {
-    toast("请选择 JSON、JSONL、CSV 或 TXT 格式的聊天记录。", true);
+    const message = /\.zip$/i.test(file.name) ? "导入 ZIP 请点击顶部「导入」，再选择 ZIP 归档。" : "请选择 JSON、JSONL、CSV 或 TXT 格式的聊天记录。";
+    $("import-text-status").textContent = message;
+    toast(message, true);
     return;
   }
   if (file.size > 100 * 1024 * 1024) {
+    $("import-text-status").textContent = "文件超过 100 MB，请拆分后再导入。";
     toast("文件超过 100 MB，请拆分后再导入。", true);
     return;
   }
   state.importing = true;
+  $("import-text-method").open = true;
+  $("import-text-status").textContent = `正在导入「${file.name}」…`;
   const buttons = Array.from(document.querySelectorAll('[data-action="import"]'));
   const originalButtonNodes = new Map(buttons.map((button) => [button, Array.from(button.childNodes)]));
   buttons.forEach((button) => {
@@ -1434,25 +1582,26 @@ async function importFile(file) {
     button.setAttribute("aria-busy", "true");
     button.replaceChildren(element("span", "", "导入中…"));
   });
+  renderImportDialog();
   toast(`正在导入「${file.name}」…`);
   try {
     const result = await api("/api/import", { method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Filename": encodeURIComponent(file.name) }, body: file });
-    toast(result.duplicate ? "这个文件已经导入过，无需重复导入。" : `导入完成：${count(result.conversations)} 个会话，${count(result.messages)} 条消息。`);
-    $("conversation-search").value = "";
-    state.pendingGlobalSearch?.cancel();
-    setDateRange("global");
-    state.conversationLoaded = false;
+    const message = result.duplicate ? "这个文件已经导入过，无需重复导入。" : `文字导入完成：${count(result.conversations)} 个会话，${count(result.messages)} 条消息，已保存到本机。`;
+    $("import-text-status").textContent = message;
+    toast(message);
     showPage("reader");
-    await loadConversations();
-    if (state.conversations.length) await selectConversation(state.conversations[0].id);
     await refreshStatus({ silent: true });
+    await resetReaderSource();
+    if (state.conversations.length) await selectConversation(state.conversations[0].id);
   } catch (error) {
+    $("import-text-status").textContent = `文字导入未完成：${error.message}`;
     toast(error.message, true);
   } finally {
     state.importing = false;
     originalButtonNodes.forEach((nodes, button) => button.replaceChildren(...nodes));
     document.querySelectorAll('[data-action="import"]').forEach((button) => { button.disabled = false; button.removeAttribute("aria-busy"); });
     $("import-file").value = "";
+    renderImportDialog();
   }
 }
 
@@ -1496,6 +1645,11 @@ function bindEvents() {
       "pick-source": () => pickFolder("source", button),
       "pick-destination": () => pickFolder("destination", button),
       import: () => $("import-file").click(),
+      "reader-import": () => openImportDialog(button),
+      "import-close": () => $("reader-import-dialog").close(),
+      "import-pick-archive": () => pickImportArchive(button),
+      "import-start": () => startImportArchive(button),
+      "import-view": () => withBusy(button, viewImportedRecords, "正在打开…"),
       "import-keys": () => $("wechat-key-file").click(),
       "read-wechat": () => withBusy(button, async () => {
         const result = await api("/api/wechat/import", { method: "POST", body: {} });
@@ -1537,6 +1691,9 @@ function bindEvents() {
   });
   document.querySelector(".brand").addEventListener("click", (event) => { event.preventDefault(); showPage("overview"); });
   $("settings-form").addEventListener("submit", saveSettings);
+  $("reader-import-dialog").addEventListener("close", () => {
+    state.importTrigger?.focus({ preventScroll: true });
+  });
   $("reader-export-form").addEventListener("submit", startExport);
   $("reader-export-dialog").addEventListener("close", () => {
     state.exportRequest += 1;

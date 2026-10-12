@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -139,6 +140,7 @@ class Application:
         self.reader_source = {"archived": False, "name": "本机记录"}
         self.reader_generation = secrets.token_hex(16)
         self.completed_exports = {}
+        self.import_previews = {}
         self.scheduler = Scheduler(self.state_dir, PROJECT)
         self.job = None
         self.job_lock = threading.Lock()
@@ -183,6 +185,43 @@ class Application:
             source_id = self.reader_generation
         return {"source": source, "source_id": source_id, "summary": export_summary(library),
                 "default_destination": self.config()["destination"]}
+
+    @staticmethod
+    def import_path(path):
+        if not isinstance(path, str) or not path or not Path(path).is_absolute():
+            raise ValueError("请选择本机的拾聊可读 ZIP 归档。")
+        selected = Path(path)
+        if selected.is_symlink() or not selected.is_file():
+            raise ValueError("请选择普通 ZIP 文件，不能使用符号链接。")
+        return selected.resolve(strict=True)
+
+    def import_info(self, path):
+        from vault.archive_import import archive_import_info
+        from vault.media_store import signature
+        selected = self.import_path(path)
+        before = signature(selected.stat())
+        info = archive_import_info(selected, self.library)
+        if signature(selected.stat()) != before:
+            raise ValueError("归档在读取期间发生变化，请重新选择文件。")
+        preview_id = secrets.token_hex(16)
+        with self.job_lock:
+            if len(self.import_previews) >= 8:
+                self.import_previews.pop(next(iter(self.import_previews)))
+            self.import_previews[preview_id] = {"path": str(selected), "signature": before}
+        return {**info, "preview_id": preview_id, "filename": selected.name,
+                "available_bytes": shutil.disk_usage(self.state_dir).free, "destination_label": "本机记录"}
+
+    def checked_import(self, path, preview_id):
+        from vault.media_store import signature
+        if not isinstance(preview_id, str):
+            raise ValueError("请先选择归档并查看导入内容。")
+        selected = self.import_path(path)
+        with self.job_lock:
+            preview = self.import_previews.get(preview_id)
+        if (preview is None or preview["path"] != str(selected)
+                or preview["signature"] != signature(selected.stat())):
+            raise ValueError("导入预览已失效或归档发生变化，请重新选择文件。")
+        return selected, preview["signature"]
 
     def use_local_reader(self):
         with self.job_lock:
@@ -327,10 +366,11 @@ class Application:
                 result["reader_error"] = "原始备份已保存，可读压缩归档未能生成，请重试保存可读归档。"
         return result
 
-    def start_job(self, kind, snapshot_id=None, archive_path=None, destination=None, source_id=None):
+    def start_job(self, kind, snapshot_id=None, archive_path=None, destination=None, source_id=None, preview_id=None):
         config = self.config()
         export_destination = (self.export_destination(config["destination"] if destination is None else destination, config)
                               if kind == "reader_export" else None)
+        import_selection = self.checked_import(archive_path, preview_id) if kind == "reader_import" else None
         with self.job_lock:
             if self.job and self.job["status"] == "running":
                 raise ValueError("Another operation is already running")
@@ -353,6 +393,15 @@ class Application:
                     result = self.backup_with_reader(config, progress)
                 elif kind == "wechat_import":
                     result = self.read_wechat(config, progress)
+                elif kind == "reader_import":
+                    from vault.archive_import import import_archive
+                    from vault.media_store import signature
+                    selected, expected = import_selection
+                    with self.operation_lock():
+                        if selected.is_symlink() or signature(selected.stat()) != expected:
+                            raise ValueError("归档发生变化，请重新选择文件后导入。")
+                        result = import_archive(self.library, selected, progress, expected_signature=expected)
+                        self.use_local_reader()
                 elif kind == "reader_export":
                     from vault.readable_archive import create_archive
                     from vault.media_store import signature
@@ -585,7 +634,9 @@ class Handler(BaseHTTPRequestHandler):
                 filename = unquote(self.headers.get("X-Filename", "export.json"))
                 data = self.body(MAX_IMPORT_BYTES, raw=True)
                 with self.app.operation_lock():
-                    return self.response(self.app.library.import_file(data, filename))
+                    result = self.app.library.import_file(data, filename)
+                    self.app.use_local_reader()
+                    return self.response(result)
             if path == "/api/wechat/keys":
                 data = self.body(4 * 1024 * 1024, raw=True)
                 with self.app.operation_lock():
@@ -602,6 +653,11 @@ class Handler(BaseHTTPRequestHandler):
                                                        source_id=body.get("source_id")), 202)
             if path == "/api/reader/export/reveal":
                 return self.response(self.app.reveal_export(body.get("path")))
+            if path == "/api/reader/import-info":
+                return self.response(self.app.import_info(body.get("path")))
+            if path == "/api/reader/import":
+                return self.response(self.app.start_job("reader_import", archive_path=body.get("path"),
+                                                       preview_id=body.get("preview_id")), 202)
             if path == "/api/reader/archive":
                 archive_path = body.get("path")
                 if not isinstance(archive_path, str) or not Path(archive_path).is_absolute():
@@ -610,11 +666,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/reader/live":
                 self.app.use_local_reader()
                 return self.response({"ok": True})
-            if path == "/api/pick-archive":
+            if path in {"/api/pick-archive", "/api/pick-import-archive"}:
                 if sys.platform != "darwin":
                     raise ValueError("File selection is only available on macOS")
+                prompt = "选择要导入本机的拾聊可读 ZIP 归档" if path == "/api/pick-import-archive" else "选择拾聊可读压缩归档"
                 chosen = subprocess.run(["/usr/bin/osascript", "-e",
-                    'POSIX path of (choose file with prompt "选择拾聊可读压缩归档" of type {"zip"})'],
+                    f'POSIX path of (choose file with prompt "{prompt}" of type {{"zip"}})'],
                     capture_output=True, text=True, timeout=120)
                 if chosen.returncode:
                     return self.response({"path": None})

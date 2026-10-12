@@ -1,6 +1,7 @@
 """Test scheduling boundaries and real loopback HTTP authorization."""
 
 from datetime import datetime
+from contextlib import contextmanager
 import http.client
 from http.server import ThreadingHTTPServer
 import json
@@ -725,6 +726,219 @@ class ReaderExportTests(unittest.TestCase):
         with patch("app.subprocess.run") as revealed:
             self.assertEqual(self.request("POST", "/api/reader/export/reveal", {"path": result_holder["path"]})[0], 400)
             revealed.assert_not_called()
+
+
+class ReaderImportTests(unittest.TestCase):
+    setUp = ReaderExportTests.setUp
+    close_server = ReaderExportTests.close_server
+    seed = ReaderExportTests.seed
+    request = ReaderExportTests.request
+    wait_job = ReaderExportTests.wait_job
+    select_archive = ReaderExportTests.select_archive
+
+    def preview(self, path):
+        status, result = self.request("POST", "/api/reader/import-info", {"path": str(path)})
+        self.assertEqual(status, 200, result)
+        self.assertIsInstance(result["preview_id"], str)
+        return result
+
+    def state_bytes(self):
+        return {str(path.relative_to(self.state)): path.read_bytes()
+                for path in self.state.rglob("*") if path.is_file()}
+
+    def test_import_endpoints_require_authentication_before_access_or_native_picker(self):
+        with patch("vault.archive_import.archive_import_info") as preview, \
+                patch("vault.archive_import.import_archive") as imported, patch("app.subprocess.run") as picker:
+            for endpoint in ("/api/reader/import-info", "/api/reader/import", "/api/pick-import-archive"):
+                with self.subTest(endpoint=endpoint):
+                    self.assertEqual(self.request("POST", endpoint, {"path": "synthetic.zip"}, authorized=False)[0], 401)
+        preview.assert_not_called()
+        imported.assert_not_called()
+        picker.assert_not_called()
+        self.assertIsNone(self.application.job)
+
+    def test_preview_is_read_only_and_does_not_switch_the_selected_archive(self):
+        original, _ = self.select_archive()
+        selected = self.application.reader_library
+        generation = self.application.reader_generation
+        before = self.state_bytes()
+        archive_bytes = original.read_bytes()
+        with patch("vault.archive_import.import_archive") as imported:
+            info = self.preview(original)
+        imported.assert_not_called()
+        self.assertEqual(info["summary"]["messages"], 3)
+        self.assertEqual(info["filename"], original.name)
+        self.assertGreater(info["required_bytes"], 0)
+        self.assertGreater(info["available_bytes"], 0)
+        self.assertEqual(self.state_bytes(), before)
+        self.assertEqual(original.read_bytes(), archive_bytes)
+        self.assertIs(self.application.reader_library, selected)
+        self.assertEqual(self.application.reader_generation, generation)
+
+    def test_preview_rejects_invalid_paths_and_symlinks_before_reading_archive(self):
+        original, _ = self.select_archive()
+        alias = self.root / "synthetic-alias.zip"
+        alias.symlink_to(original)
+        invalid = [None, False, 123, {}, [], "", " ", "relative.zip", str(self.root),
+                   str(self.root / "missing.zip"), str(alias)]
+        with patch("vault.archive_import.archive_import_info") as inspected:
+            for index, path in enumerate(invalid):
+                with self.subTest(index=index):
+                    self.assertEqual(self.request("POST", "/api/reader/import-info", {"path": path})[0], 400)
+        inspected.assert_not_called()
+
+    def test_confirmation_rejects_missing_unknown_or_mismatched_preview(self):
+        original, _ = self.select_archive()
+        info = self.preview(original)
+        other = self.root / "another-synthetic.zip"
+        other.write_bytes(original.read_bytes())
+        invalid = [{"path": str(original)}, {"path": str(original), "preview_id": None},
+                   {"path": str(original), "preview_id": "unknown"},
+                   {"path": str(original), "preview_id": []},
+                   {"path": str(other), "preview_id": info["preview_id"]}]
+        previous_job = dict(self.application.job)
+        with patch("vault.archive_import.import_archive") as imported:
+            for index, body in enumerate(invalid):
+                with self.subTest(index=index):
+                    self.assertEqual(self.request("POST", "/api/reader/import", body)[0], 400)
+        imported.assert_not_called()
+        self.assertEqual(self.application.job, previous_job)
+        self.assertEqual(self.application.library.stats()["messages"], 2)
+
+    def test_replacing_previewed_archive_invalidates_confirmation_even_for_identical_bytes(self):
+        original, _ = self.select_archive()
+        info = self.preview(original)
+        replacement = original.with_name("synthetic-replacement.zip")
+        replacement.write_bytes(original.read_bytes())
+        replacement.replace(original)
+        with patch("vault.archive_import.import_archive") as imported:
+            status, _ = self.request("POST", "/api/reader/import", {
+                "path": str(original), "preview_id": info["preview_id"]})
+        self.assertEqual(status, 400)
+        imported.assert_not_called()
+
+    def test_preview_tokens_are_bounded_and_oldest_confirmation_expires(self):
+        original, _ = self.select_archive()
+        previews = [self.preview(original)["preview_id"] for _ in range(9)]
+        self.assertEqual(len(set(previews)), 9)
+        self.assertEqual(len(self.application.import_previews), 8)
+        with patch("vault.archive_import.import_archive") as imported:
+            self.assertEqual(self.request("POST", "/api/reader/import", {
+                "path": str(original), "preview_id": previews[0]})[0], 400)
+        imported.assert_not_called()
+        selected, _ = self.application.checked_import(str(original), previews[-1])
+        self.assertEqual(selected, original)
+
+    def test_import_lock_conflict_prevents_core_merge_and_preserves_reader(self):
+        original, _ = self.select_archive()
+        info = self.preview(original)
+        selected = self.application.reader_library
+        other = Application(self.state)
+        with patch("vault.archive_import.import_archive") as imported:
+            with other.operation_lock():
+                status, _ = self.request("POST", "/api/reader/import", {
+                    "path": str(original), "preview_id": info["preview_id"]})
+                self.assertEqual(status, 202)
+                job = self.wait_job(expected="error")
+        self.assertEqual(job["code"], "operation_busy")
+        imported.assert_not_called()
+        self.assertIs(self.application.reader_library, selected)
+        self.assertEqual(self.application.library.stats()["messages"], 2)
+        self.assertEqual(self.application.config_path.read_bytes(), self.config_bytes)
+
+    def test_archive_is_checked_again_after_acquiring_the_operation_lock(self):
+        original, _ = self.select_archive()
+        info = self.preview(original)
+        entered, release = threading.Event(), threading.Event()
+        real_lock = self.application.operation_lock
+
+        @contextmanager
+        def delayed_lock():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("Synthetic import was not released")
+            with real_lock():
+                yield
+
+        with patch.object(self.application, "operation_lock", delayed_lock), \
+                patch("vault.archive_import.import_archive") as imported:
+            self.application.start_job("reader_import", archive_path=str(original), preview_id=info["preview_id"])
+            try:
+                self.assertTrue(entered.wait(3))
+                replacement = original.with_name("synthetic-late-replacement.zip")
+                replacement.write_bytes(original.read_bytes())
+                replacement.replace(original)
+            finally:
+                release.set()
+            self.wait_job(expected="error")
+        imported.assert_not_called()
+        self.assertTrue(self.application.reader_source["archived"])
+
+    def test_core_failure_does_not_switch_the_reader_or_change_configuration(self):
+        original, _ = self.select_archive()
+        info = self.preview(original)
+        selected = self.application.reader_library
+        generation = self.application.reader_generation
+        with patch("vault.archive_import.import_archive", side_effect=ValueError("Synthetic damaged media")):
+            self.application.start_job("reader_import", archive_path=str(original), preview_id=info["preview_id"])
+            self.wait_job(expected="error")
+        self.assertIs(self.application.reader_library, selected)
+        self.assertEqual(self.application.reader_generation, generation)
+        self.assertEqual(self.application.library.stats()["messages"], 2)
+        self.assertEqual(self.application.config_path.read_bytes(), self.config_bytes)
+
+    def test_complete_merge_switches_to_local_and_media_survives_without_source_archive(self):
+        original, asset = self.select_archive()
+        archive_bytes = original.read_bytes()
+        generation = self.application.reader_generation
+        info = self.preview(original)
+        with patch("app.wechat_running", return_value=True), \
+                patch.object(self.application, "assert_wechat_closed", side_effect=AssertionError("Unexpected WeChat access")):
+            status, _ = self.request("POST", "/api/reader/import", {
+                "path": str(original), "preview_id": info["preview_id"]})
+            self.assertEqual(status, 202)
+            self.wait_job()
+        self.assertFalse(self.application.reader_source["archived"])
+        self.assertIs(self.application.reader_library, self.application.library)
+        self.assertNotEqual(self.application.reader_generation, generation)
+        self.assertEqual(self.application.library.stats()["messages"], 5)
+        self.assertEqual(original.read_bytes(), archive_bytes)
+        self.assertEqual(self.application.config_path.read_bytes(), self.config_bytes)
+        original.unlink()
+        with self.application.library.media.open(asset) as (stream, _):
+            self.assertEqual(stream.read(), b"Synthetic image payload for archive transport")
+
+    def test_importing_the_same_complete_archive_twice_does_not_duplicate_messages(self):
+        original, _ = self.select_archive()
+        for _ in range(2):
+            info = self.preview(original)
+            status, _ = self.request("POST", "/api/reader/import", {
+                "path": str(original), "preview_id": info["preview_id"]})
+            self.assertEqual(status, 202)
+            self.wait_job()
+        self.assertEqual(self.application.library.stats()["messages"], 5)
+
+    def test_successful_text_import_returns_to_local_library(self):
+        self.select_archive()
+        generation = self.application.reader_generation
+        status, result = self.request("POST", "/api/import", {"title": "Synthetic text import", "messages": [
+            {"sender": "Synthetic tester", "text": "Synthetic newly imported text"}]})
+        self.assertEqual(status, 200, result)
+        self.assertIs(self.application.reader_library, self.application.library)
+        self.assertFalse(self.application.reader_source["archived"])
+        self.assertNotEqual(self.application.reader_generation, generation)
+        self.assertEqual(self.application.library.stats()["messages"], 3)
+        self.assertEqual(self.application.config_path.read_bytes(), self.config_bytes)
+
+    def test_failed_text_import_preserves_the_selected_archive(self):
+        self.select_archive()
+        selected = self.application.reader_library
+        generation = self.application.reader_generation
+        status, _ = self.request("POST", "/api/import", {"unsupported": "Synthetic invalid export"})
+        self.assertEqual(status, 400)
+        self.assertIs(self.application.reader_library, selected)
+        self.assertEqual(self.application.reader_generation, generation)
+        self.assertEqual(self.application.library.stats()["messages"], 2)
 
 
 if __name__ == "__main__":

@@ -147,6 +147,23 @@ body.reader-active { overflow: hidden; }
 .reader-topbar-actions > .text-button:hover { color: #a9edbc; }
 .reader-topbar-actions .reader-export-button { min-height: 32px; padding: 6px 11px; border: 1px solid #537b5d; border-radius: 6px; color: #c6f4d2; background: #30533b; font-size: 12px; white-space: nowrap; }
 .reader-topbar-actions .reader-export-button:hover { background: #3e6749; }
+.reader-topbar-actions .reader-import-button { min-height: 32px; padding: 6px 11px; border: 1px solid #58665d; border-radius: 6px; color: #dfebe2; background: #38483e; font-size: 12px; white-space: nowrap; }
+.reader-topbar-actions .reader-import-button:hover { background: #475c4e; }
+.import-method { padding: 18px 0; border-bottom: 1px solid var(--line); }
+.import-method-heading { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 13px; }
+.import-method-heading > .icon { margin-top: 2px; color: #a5d9b3; }
+.import-method-heading h3 { margin: 0 0 6px; font-size: 15px; }
+.import-method-heading p { color: #b9c6bd; font-size: 13px; line-height: 1.7; }
+.import-method .field-help { margin-bottom: 0; line-height: 1.8; }
+.import-text-method { margin-top: 9px; }
+.import-text-method > summary { list-style: none; cursor: pointer; margin-bottom: 0; }
+.import-text-method > summary::-webkit-details-marker { display: none; }
+.import-text-method > summary::after { content: "展开"; margin-left: auto; color: #a5d9b3; font-size: 12px; white-space: nowrap; }
+.import-text-method[open] > summary { margin-bottom: 13px; }
+.import-text-method[open] > summary::after { content: "收起"; }
+.import-disk { margin: 14px 0; padding: 11px 13px; border: 1px solid #526159; border-radius: 7px; color: #cadbce; background: #303b34; font-size: 12px; line-height: 1.8; }
+.import-dialog #import-preview { padding-top: 16px; }
+.import-dialog .export-error { overflow-wrap: anywhere; }
 .reader-management { position: relative; }
 .reader-management > summary { display: flex; align-items: center; gap: 7px; padding: 8px 0 8px 6px; color: #c4cfc8; font-size: 12px; cursor: pointer; list-style: none; border-radius: 5px; }
 .reader-management > summary::-webkit-details-marker { display: none; }
@@ -607,6 +624,8 @@ select { appearance: auto; }
   .reader-topbar-actions { gap: 9px; }
   .reader-topbar-actions .reader-export-button { padding: 6px 8px; font-size: 11px; }
   .reader-export-button .icon { display: none; }
+  .reader-topbar-actions .reader-import-button { padding: 6px 8px; font-size: 12px; }
+  .reader-import-button .icon { display: none; }
   .reader-topbar-title .reader-source-chip { display: none; }
   .export-dialog { width: calc(100% - 24px); max-height: calc(100dvh - 24px); padding: 20px 17px; }
   .export-dialog .dialog-heading h2 { font-size: 19px; }
