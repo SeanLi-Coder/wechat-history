@@ -1,0 +1,5 @@
+# Versions used to validate the optional native media and database features.
+cryptography==44.0.2
+Pillow==11.1.0
+zstandard==0.23.0
+pilk==0.2.4

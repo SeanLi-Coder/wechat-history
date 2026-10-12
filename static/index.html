@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#222426">
+  <title>拾聊 · 让每一句，都有归处</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232d6846'/%3E%3Cpath d='M8 12h16v13H8zM6 7h20v5H6z' fill='none' stroke='%23a8efbb' stroke-width='2' stroke-linejoin='round'/%3E%3Cpath d='M13 17h6' stroke='%23a8efbb' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#overview" aria-label="拾聊首页">
+        <span class="brand-mark"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M7 10h18v14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V10Z" stroke="currentColor" stroke-width="1.8"/><path d="M5 7a2 2 0 0 1 2-2h18a2 2 0 0 1 2 2v4H5V7Z" fill="currentColor"/><path d="M12 16h8M14 21h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+        <span>拾聊<span class="brand-en">CHAT KEEPER</span></span>
+      </a>
+      <p class="nav-caption">我的空间</p>
+      <nav class="nav-list">
+        <button class="nav-item active" data-page="overview" aria-current="page" aria-label="概览" title="概览"><span class="icon" data-icon="grid"></span><span>概览</span></button>
+        <button class="nav-item" data-page="archives" aria-label="备份档案" title="备份档案"><span class="icon" data-icon="archive"></span><span>备份档案</span><span class="nav-count" id="nav-archive-count">0</span></button>
+        <button class="nav-item" data-page="reader" aria-label="聊天阅读" title="聊天阅读"><span class="icon" data-icon="chat"></span><span>聊天阅读</span></button>
+        <button class="nav-item" data-page="settings" aria-label="设置" title="设置"><span class="icon" data-icon="settings"></span><span>设置</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="local-badge"><span class="local-dot"></span><span>只在你的电脑上</span></div>
+        <p>留住对话，也留住那些日常。</p>
+        <span class="version" id="app-version">拾聊 · 本地版</span>
+      </div>
+    </aside>
+
+    <main class="main" id="main" tabindex="-1">
+      <header class="topbar"><span class="breadcrumb">我的空间 <span>/</span> <span id="page-breadcrumb">概览</span></span><span class="device-label"><span class="icon" data-icon="monitor"></span> 本机存储 <span class="topbar-dot"></span></span></header>
+      <div class="connection-banner" id="connection-banner" role="alert" hidden></div>
+
+      <section class="page active" id="page-overview" aria-labelledby="overview-heading">
+        <div class="page-heading"><div><p class="eyebrow">A LITTLE SPACE FOR YOUR CONVERSATIONS</p><h1 id="overview-heading">让每一句，都有归处<span class="heading-dot">.</span></h1><p class="page-subtitle">为珍贵的对话留一份备份，随时重拾那些日常。</p></div><span class="date-pill" id="today-label"></span></div>
+        <div class="overview-grid">
+          <article class="hero-card">
+            <div class="hero-content"><div class="hero-kicker"><span class="status-dot"></span> 本地备份 · 私密保存</div><h2>你的聊天记忆，<br>好好收藏。</h2><p>将微信数据压缩归档到电脑，<br>让每一次备份，都多一份安心。</p><button class="button button-dark" data-action="backup"><span class="icon" data-icon="plus"></span><span>立即备份</span><span class="icon arrow" data-icon="arrow-right"></span></button><span class="hero-footnote" id="hero-backup-note">备份前请退出微信，以保证文件一致性</span></div>
+            <div class="archive-art" aria-hidden="true"><div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div><div class="art-spark spark-one">✳</div><div class="art-spark spark-two">+</div><div class="art-paper paper-back"><i></i><i></i><i></i></div><div class="art-paper paper-front"><span class="paper-chat">···</span><i></i><i></i></div><div class="art-box"><div class="box-tab"></div><div class="box-label"><span></span></div><div class="box-caption">MEMORIES, KEPT.</div></div><div class="art-seal"><span class="icon" data-icon="check"></span></div></div>
+          </article>
+          <article class="card schedule-card"><div class="card-heading"><span class="small-icon mint" data-icon="clock"></span><span class="muted-label">自动备份</span><span class="badge badge-neutral" id="schedule-badge">未开启</span></div><div><h2 id="schedule-headline">按自己的节奏，收藏</h2><p class="muted-text" id="schedule-description">设置一个方便的时间，让备份成为习惯。</p></div><div class="schedule-time"><span id="schedule-time-display">— : —</span><span id="schedule-interval-label">等待设置</span></div><div class="schedule-divider"></div><button class="text-button" data-page="settings"><span id="schedule-action-text">设置备份计划</span><span class="icon" data-icon="arrow-right"></span></button></article>
+        </div>
+        <div class="stats-grid"><article class="stat-card"><span class="stat-icon" data-icon="archive"></span><div><p>已保存备份</p><div class="stat-value"><span id="stat-snapshots">0</span><small>份</small></div></div></article><article class="stat-card"><span class="stat-icon" data-icon="database"></span><div><p>本地归档大小</p><div class="stat-value" id="stat-storage">0 <small>B</small></div></div></article><article class="stat-card"><span class="stat-icon" data-icon="chat"></span><div><p>可阅读的消息</p><div class="stat-value"><span id="stat-messages">0</span><small>条</small></div></div></article></div>
+        <div class="job-panel" id="overview-job" aria-live="polite" hidden></div>
+        <div class="section-heading"><div><h2>最近的备份</h2><p>每一份归档，都是对话的时间切片。</p></div><button class="text-button" data-page="archives">查看全部<span class="icon" data-icon="arrow-right"></span></button></div>
+        <div class="card recent-card" id="recent-archives"><div class="loading-placeholder">正在读取本地档案…</div></div>
+        <div class="quiet-note"><span class="icon" data-icon="shield"></span><span>备份文件保存在你选择的本机目录中，本软件不会将聊天数据上传云端。</span></div>
+      </section>
+
+      <section class="page" id="page-archives" aria-labelledby="archives-heading" hidden>
+        <div class="page-heading"><div><p class="eyebrow">YOUR CONVERSATION TIME CAPSULES</p><h1 id="archives-heading">备份档案<span class="heading-dot">.</span></h1><p class="page-subtitle">按时间收藏微信原始文件，每一份都可以校验和定位。</p></div><button class="button button-dark" data-action="backup"><span class="icon" data-icon="plus"></span>新建备份</button></div>
+        <div class="info-note"><span class="icon" data-icon="info"></span><div><strong>原始备份与聊天阅读</strong><p>微信 4.x 的原始数据库通常已加密。ZIP 会完整保存选定目录中的原始文件，但不能直接显示聊天正文。阅读聊天请前往「聊天阅读」导入可读文件。</p></div></div>
+        <div class="job-panel" id="archives-job" aria-live="polite" hidden></div>
+        <div class="section-heading compact"><h2>全部归档 <span class="count-label" id="archives-total">0 份</span></h2><button class="text-button" data-action="refresh"><span class="icon" data-icon="refresh"></span>刷新</button></div>
+        <div class="card" id="all-archives"></div>
+      </section>
+
+      <section class="page reader-page" id="page-reader" aria-labelledby="reader-heading" hidden>
+        <header class="reader-topbar">
+          <div class="reader-topbar-title"><h1 id="reader-heading">聊天</h1><span class="reader-source-chip" id="reader-source-chip">本机记录</span></div>
+          <div class="reader-topbar-actions">
+            <button class="text-button reader-open-button" data-action="reader-open" title="打开压缩归档"><span class="icon" data-icon="folder"></span><span>打开归档</span></button>
+            <button class="text-button" data-action="reader-live" title="返回本机记录" hidden><span class="icon" data-icon="monitor"></span><span>返回本机</span></button>
+            <details class="reader-management" id="reader-management">
+              <summary title="聊天与归档管理"><span class="icon" data-icon="settings"></span><span>管理</span></summary>
+              <div class="reader-management-panel">
+                <div class="reader-management-heading"><h2>聊天与归档管理</h2><button class="icon-button" data-action="close-reader-management" aria-label="收起管理面板"><span class="icon" data-icon="close"></span></button></div>
+                <div class="reader-archive-toolbar"><div class="reader-source"><span class="icon" data-icon="archive"></span><div><strong id="reader-source-title">本机记录</strong><p id="reader-source-description">聊天和可用媒体保存在本机，备份时一并保存可读归档。</p></div></div><button class="button button-outline" data-action="reader-export"><span class="icon" data-icon="archive"></span>保存可读归档</button></div>
+                <div class="info-note wechat-connect"><span class="icon" data-icon="lock"></span><div><strong>读取本机微信聊天</strong><p id="wechat-key-status">正在检查本机读取状态…</p><div class="wechat-connect-actions"><button class="button button-dark" data-action="read-wechat"><span class="icon" data-icon="refresh"></span>读取 / 更新聊天</button><button class="text-button" data-action="import-keys">导入已有密钥文件</button></div></div></div>
+                <div class="reader-intro" id="reader-intro"><div><h3>导入可读聊天记录</h3><p>支持 ChatLab JSON / JSONL、通用 JSON / CSV / TXT，单个文件最多 100 MB。</p></div><div class="reader-import-actions"><button class="button button-outline" data-action="import"><span class="icon" data-icon="upload"></span>导入聊天记录</button><button class="text-button" data-action="demo">试读示例<span class="icon" data-icon="arrow-right"></span></button></div></div>
+              </div>
+            </details>
+          </div>
+        </header>
+        <input id="import-file" type="file" accept=".json,.jsonl,.csv,.txt" hidden>
+        <input id="wechat-key-file" type="file" accept=".json" hidden>
+        <div class="job-panel" id="reader-job" aria-live="polite" hidden></div>
+        <div class="reader-shell" id="reader-dropzone">
+          <aside class="conversation-pane" aria-label="会话列表"><div class="conversation-pane-heading"><span id="conversation-pane-title">会话</span><span class="read-only-label"><span class="icon" data-icon="lock"></span>只读</span></div><label class="search-field"><span class="icon" data-icon="search"></span><input id="conversation-search" type="search" maxlength="200" placeholder="搜索用户、会话或聊天内容" aria-label="搜索用户名、会话名或聊天关键词" aria-controls="conversation-list"><button class="search-clear" data-action="clear-global-search" aria-label="清空全局搜索" title="清空搜索" hidden><span class="icon" data-icon="close"></span></button></label><p class="global-search-status" id="global-search-status" role="status" hidden></p><div class="conversation-list" id="conversation-list"></div><div class="conversation-footer" id="conversation-count">0 个会话 · 本机阅读</div></aside>
+          <div class="messages-pane"><div class="messages-header" id="messages-header" hidden><button class="icon-button reader-back" data-action="reader-back" aria-label="返回会话列表" title="返回会话列表"><span class="icon" data-icon="arrow-left"></span></button><span class="conversation-avatar header-avatar" id="conversation-header-avatar" aria-hidden="true"></span><div class="messages-header-title"><h2 id="conversation-title"></h2><p id="conversation-meta"></p></div><button class="icon-button message-search-toggle" data-action="toggle-message-search" aria-label="搜索当前会话" aria-expanded="false" aria-controls="message-search-field"><span class="icon" data-icon="search"></span></button><label class="search-field message-search" id="message-search-field"><span class="icon" data-icon="search"></span><input id="message-search" type="search" maxlength="200" placeholder="搜索消息或发送者" aria-label="搜索当前会话中的消息或发送者"></label></div><div class="message-context-bar" id="message-context-bar" hidden><span id="message-context-caption">已定位到搜索结果 · 显示前后文</span><button class="text-button" data-action="exit-message-context">查看全部聊天</button></div><div class="messages-scroll" id="messages-scroll"><div id="message-list" class="message-list"></div></div><div class="reader-bottom"><span class="icon" data-icon="lock"></span><span>只读归档 · 不能发送消息 · 搜索与阅读均在本机完成</span></div></div>
+          <div class="drop-overlay" id="drop-overlay" hidden><span class="icon" data-icon="upload"></span><h2>松开即可导入</h2><p>JSON、JSONL、CSV 或 TXT · 最大 100 MB</p></div>
+        </div>
+      </section>
+
+      <section class="page settings-page" id="page-settings" aria-labelledby="settings-heading" hidden>
+        <div class="page-heading"><div><p class="eyebrow">MAKE YOURSELF AT HOME</p><h1 id="settings-heading">设置<span class="heading-dot">.</span></h1><p class="page-subtitle">选择聊天数据的位置，安排适合自己的备份节奏。</p></div></div>
+        <form id="settings-form">
+          <article class="card settings-card"><div class="settings-title"><span class="small-icon mint" data-icon="folder"></span><div><h2>存储位置</h2><p>微信原始数据只读访问，归档保存到你选择的目录。</p></div></div><div class="settings-fields"><label class="field-label" for="detected-source">检测到的微信目录</label><select id="detected-source"><option value="">选择检测到的目录，或在下方手动填写</option></select><div class="field-group"><label class="field-label" for="source-path">微信数据目录 <span>数据来源</span></label><div class="path-field"><input id="source-path" name="source" type="text" placeholder="选择微信账号的数据文件夹" autocomplete="off" spellcheck="false"><button class="button button-outline" type="button" data-action="pick-source"><span class="icon" data-icon="folder"></span>选择文件夹</button></div><p class="field-help">可选择一个账号目录或整个微信数据目录。首次访问时，macOS 可能要求授予文件夹权限。</p></div><div class="field-group"><label class="field-label" for="destination-path">备份保存目录 <span>ZIP 归档</span></label><div class="path-field"><input id="destination-path" name="destination" type="text" placeholder="选择保存备份的文件夹" autocomplete="off" spellcheck="false" required><button class="button button-outline" type="button" data-action="pick-destination"><span class="icon" data-icon="folder"></span>选择文件夹</button></div><p class="field-help">请选择微信数据目录之外的位置，并为附件、图片和视频预留足够空间。</p></div></div></article>
+          <article class="card settings-card"><div class="settings-title"><span class="small-icon mint" data-icon="clock"></span><div><h2>自动备份</h2><p>开启后，由 macOS 每 15 分钟检查一次到期计划。</p></div><label class="switch"><input type="checkbox" id="schedule-enabled" name="schedule_enabled"><span class="switch-track"></span><span class="sr-only">启用自动备份</span></label></div><div class="settings-fields"><div class="schedule-fields"><div class="field-group"><label class="field-label" for="schedule-interval">备份频率</label><select id="schedule-interval" name="interval"><option value="daily">每天一次</option><option value="hourly">每小时一次</option></select></div><div class="field-group"><label class="field-label" for="schedule-time">备份时间 <span>北京时间</span></label><input type="time" id="schedule-time" name="schedule_time" value="22:00" required></div></div><div class="settings-notice"><span class="icon" data-icon="info"></span><p>通常在设定时间后的 15 分钟内执行。备份时需要从微信菜单退出微信；若仍在运行，将暂缓并稍后重试。电脑睡眠会延后执行，关机时无法备份。自动备份默认关闭，请确认目录后再开启。</p></div><p class="schedule-state" id="schedule-state"></p></div></article>
+          <div class="settings-actions"><span id="settings-save-status" role="status"></span><button class="button button-dark" id="save-settings" type="submit"><span class="icon" data-icon="check"></span>保存设置</button></div>
+        </form>
+        <div class="quiet-note"><span class="icon" data-icon="shield"></span><span>聊天记录不会自动解密。可读的 JSON、CSV 或 TXT 文件可在「聊天阅读」中导入。</span></div>
+      </section>
+      <footer class="main-footer"><span>拾聊 <span class="footer-divider">/</span> 把日常，慢慢收藏。</span><span>MADE FOR YOUR MEMORIES</span></footer>
+    </main>
+  </div>
+  <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="false"></div>
+  <dialog id="manifest-dialog" class="manifest-dialog"><div class="dialog-heading"><div><p class="eyebrow">ARCHIVE DETAILS</p><h2>归档详情</h2></div><button class="icon-button" id="close-dialog" aria-label="关闭详情"><span class="icon" data-icon="close"></span></button></div><div id="manifest-content"></div></dialog>
+  <dialog id="media-preview-dialog" class="media-preview-dialog" aria-labelledby="media-preview-title"><div class="media-preview-heading"><div><h2 id="media-preview-title">图片预览</h2><p id="media-preview-meta"></p></div><div class="media-preview-actions"><button type="button" class="text-button" id="media-preview-size" aria-pressed="false">原始尺寸</button><button type="button" class="icon-button" id="close-media-preview" aria-label="关闭图片预览"><span class="icon" data-icon="close"></span></button></div></div><div id="media-preview-viewport" class="media-preview-viewport"></div></dialog>
+</body>
+</html>

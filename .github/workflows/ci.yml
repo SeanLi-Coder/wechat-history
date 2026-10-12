@@ -1,0 +1,42 @@
+name: Synthetic checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install macOS media tools
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg sqlcipher
+      - name: Install Linux media tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run synthetic unit and integration tests
+        run: python -B -m unittest discover -s tests -v
+      - name: Install isolated test browser
+        if: runner.os == 'Linux'
+        run: python -m playwright install --with-deps chromium
+      - name: Verify global search in the browser
+        if: runner.os == 'Linux'
+        run: python -B scripts/search_smoke.py
+      - name: Build source release archive
+        run: python -B scripts/package_release.py
