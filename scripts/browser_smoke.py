@@ -9,6 +9,7 @@ No WeChat data is read or backed up. Screenshots contain synthetic records only.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import io
 import json
 from pathlib import Path
@@ -112,7 +113,8 @@ def check_synthetic_media(page, work: Path, state: Path, checks: list) -> None:
     fixtures = synthetic_media(work)
     library = Library(state)
     conversation = next(item for item in library.conversations()["conversations"] if "周末计划" in item["title"])
-    message_id = library.messages(conversation["id"])["messages"][0]["id"]
+    message_id = next(message["id"] for message in library.messages(conversation["id"])["messages"]
+                      if message["text"].startswith("周末一起去公园"))
     for identifier, kind in (("smoke-image", "image"), ("smoke-audio", "audio"), ("smoke-video", "video")):
         mime, body = fixtures[identifier]
         source = work / identifier
@@ -148,14 +150,15 @@ def check_synthetic_media(page, work: Path, state: Path, checks: list) -> None:
     def inject_media(route):
         response = route.fetch()
         payload = response.json()
-        if payload.get("messages"):
-            payload["messages"][0]["media"] = media
+        for message in payload.get("messages", []):
+            if message["id"] == message_id:
+                message["media"] = media
         route.fulfill(response=response, json=payload)
 
     page.route("**/api/conversations/*/messages?*", inject_media)
     page.locator('[data-action="select-conversation"]').filter(has_text="周末计划").click()
     expect(page.locator(".media-card")).to_have_count(len(media))
-    expect(page.locator(".message-bubble").first).to_contain_text("公园")
+    expect(page.locator(f'.message-item[data-message-id="{message_id}"] .message-bubble')).to_contain_text("公园")
     image = page.locator(".message-image")
     image.scroll_into_view_if_needed()
     wait_until(lambda: image.evaluate("node => node.naturalWidth === 960"), "synthetic image decoding")
@@ -291,6 +294,15 @@ def go_to(page, name: str):
     page.evaluate("window.scrollTo(0, 0)")
 
 
+def assert_newest_first(page):
+    rows = page.locator(".message-item").evaluate_all("""nodes => nodes.map(node => ({
+        id: Number(node.dataset.messageId), timestamp: node.querySelector('.message-meta time').dateTime
+    }))""")
+    keys = [(row["timestamp"], row["id"]) for row in rows]
+    assert keys == sorted(keys, reverse=True), "Messages are not ordered by descending timestamp and ID"
+    assert len({row["id"] for row in rows}) == len(rows), "Message pagination repeated an ID"
+
+
 def check_mobile_width(page, name: str) -> dict:
     go_to(page, name)
     page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
@@ -360,6 +372,13 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                  "timestamp": "2026-10-09T11:00:00+08:00"},
             ]},
         ]}
+        pagination_base = datetime(2024, 3, 1, 12, 0, tzinfo=timezone.utc)
+        pagination_messages = [{"sender": "合成测试", "text": f"第 {index:03d} 条合成分页记录",
+                                "timestamp": (pagination_base + timedelta(minutes=index)).isoformat()}
+                               for index in range(105)]
+        pagination_messages[4]["timestamp"] = pagination_messages[5]["timestamp"]
+        document["conversations"].append({"title": "合成分页 · 顺序校验", "messages": pagination_messages})
+        expected_pages = [message["text"] for message in reversed(pagination_messages)]
         export_path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
         server_log_path = work / "server.log"
         try:
@@ -481,15 +500,31 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                         page.locator("#import-file").set_input_files(export_path)
                     assert import_response.value.status == 200, "The import request failed."
                     imported = api_get("/api/status")["library"]
-                    assert imported["messages"] == 4 and imported["conversations"] == 2, "The import lost records."
-                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(2)
+                    assert imported["messages"] == 109 and imported["conversations"] == 3, "The import lost records."
+                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(3)
                     expect(page.locator("#conversation-title")).to_have_text("合成测试 · 周末计划")
                     expect(page.locator(".message-bubble")).to_have_count(3)
-                    expect(page.locator(".message-bubble").last).to_have_text(html_text)
+                    expect(page.locator(".message-bubble").first).to_have_text(html_text)
+                    expect(page.locator("#conversation-meta")).to_contain_text("最新在前")
+                    assert_newest_first(page)
                     assert page.locator("#message-list img, #message-list script").count() == 0, "HTML was interpreted as markup."
                     assert not page.evaluate("Boolean(window.__smokeXss)"), "Imported HTML executed."
                     assert not dialogs, "An unexpected JavaScript dialog was shown."
                     checks.append("chinese_json_import_and_literal_html")
+
+                    page.locator('[data-action="select-conversation"]').filter(has_text="合成分页 · 顺序校验").click()
+                    expect(page.locator(".message-item")).to_have_count(100)
+                    assert page.locator(".message-text").all_text_contents() == expected_pages[:100]
+                    assert_newest_first(page)
+                    expect(page.locator('[data-action="load-more"]')).to_contain_text("加载更早的消息")
+                    page.locator('[data-action="load-more"]').click()
+                    expect(page.locator(".message-item")).to_have_count(105)
+                    assert page.locator(".message-text").all_text_contents() == expected_pages
+                    assert_newest_first(page)
+                    expect(page.locator('[data-action="load-more"]')).to_have_count(0)
+                    checks.append("newest_first_and_equal_timestamp_page_boundary_continuity")
+                    page.locator('[data-action="select-conversation"]').filter(has_text="周末计划").click()
+                    expect(page.locator(".message-item")).to_have_count(3)
 
                     page.locator("#conversation-search").fill("周末")
                     expect(page.locator('[data-action="select-conversation"]')).to_have_count(1)
@@ -505,7 +540,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     page.locator("#conversation-search").fill("smoke-no-match")
                     expect(page.locator('[data-action="select-conversation"]')).to_have_count(0)
                     page.locator("#conversation-search").fill("")
-                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(2)
+                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(3)
                     checks.append("conversation_and_message_search")
                     clear_toasts(page)
                     reader_screenshot = artifacts / "reader.png"
@@ -513,7 +548,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     screenshots.append(str(reader_screenshot))
 
                     go_to(page, "overview")
-                    expect(page.locator("#stat-messages")).to_have_text("4")
+                    expect(page.locator("#stat-messages")).to_have_text("109")
                     clear_toasts(page)
                     overview_screenshot = artifacts / "overview.png"
                     page.screenshot(path=str(overview_screenshot), full_page=True)

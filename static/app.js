@@ -932,7 +932,7 @@ function setConversationHeading(conversation) {
   $("conversation-header-avatar").textContent = avatarText(conversation.title);
   $("conversation-header-avatar").className = `conversation-avatar header-avatar ${avatarTone(conversation.title || "")}`;
   const query = $("message-search").value.trim();
-  $("conversation-meta").textContent = `${query ? "找到 " : ""}${count(state.messagesTotal)} 条消息${conversation.is_demo ? " · 示例会话" : ""}`;
+  $("conversation-meta").textContent = `${query ? "找到 " : ""}${count(state.messagesTotal)} 条消息 · 最新在前${conversation.is_demo ? " · 示例会话" : ""}`;
 }
 
 function returnToConversations() {
@@ -982,7 +982,7 @@ async function loadMessages(append = false, button = null) {
   }
 }
 
-async function loadEarlierMessages(button) {
+async function loadNewerMessages(button) {
   if (!state.messageContext || !state.messagesOffset) return;
   const id = state.conversationId;
   const request = ++state.messagesRequest;
@@ -1008,8 +1008,8 @@ function renderMessages(append) {
   list.replaceChildren();
   $("message-context-bar").hidden = !state.messageContext;
   if (state.messageContext) {
-    $("message-context-caption").textContent = `搜索结果的前后文 · 第 ${count(state.messagesOffset + 1)}–${count(state.messagesOffset + state.messages.length)} 条`;
-    if (state.messagesOffset > 0) list.append(actionButton("加载更早的消息", "load-earlier", "button button-outline message-more"));
+    $("message-context-caption").textContent = `搜索结果的前后文 · 最新在前 · 第 ${count(state.messagesOffset + 1)}–${count(state.messagesOffset + state.messages.length)} 条`;
+    if (state.messagesOffset > 0) list.append(actionButton("加载更新的消息", "load-earlier", "button button-outline message-more"));
   }
   if (!state.messages.length) {
     list.append(emptyState("search", $("message-search").value ? "没有找到相关消息" : "这段会话还没有消息", $("message-search").value ? "换一个关键词，或者清空搜索查看全部消息。" : "可以继续导入聊天记录文件。"));
@@ -1052,7 +1052,7 @@ function renderMessages(append) {
     list.append(row);
   });
   if (state.messagesOffset + state.messages.length < state.messagesTotal) {
-    list.append(actionButton(state.messageContext ? "加载后续消息" : `加载更多消息（${count(state.messages.length)} / ${count(state.messagesTotal)}）`, "load-more", "button button-outline message-more"));
+    list.append(actionButton(state.messageContext ? "加载更早的消息" : `加载更早的消息（${count(state.messages.length)} / ${count(state.messagesTotal)}）`, "load-more", "button button-outline message-more"));
   }
   $("messages-scroll").scrollTop = append ? scrollTop : 0;
 }
@@ -1256,7 +1256,7 @@ function bindEvents() {
       "open-search-message": () => openSearchMessage(button.dataset.conversationId, id, button),
       "search-more": () => loadGlobalSearch(true, button),
       "clear-global-search": clearGlobalSearch,
-      "load-earlier": () => loadEarlierMessages(button),
+      "load-earlier": () => loadNewerMessages(button),
       "exit-message-context": () => { $("message-search").value = ""; loadMessages(false); },
       "load-more": () => loadMessages(true, button),
       "load-messages": () => loadMessages(false, button),

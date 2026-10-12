@@ -26,9 +26,10 @@ class LibraryTests(unittest.TestCase):
         cid = conversations[0]["id"]
         first = self.library.messages(cid, limit=1)
         self.assertEqual(first["messages"][0]["sender"], "Alice")
+        self.assertEqual(first["messages"][0]["text"], "archive normal")
         self.assertEqual(first["total"], 2)
         self.assertEqual(len(self.library.messages(cid, query="100%_")["messages"]), 1)
-        self.assertEqual(self.library.messages(cid, offset=1)["messages"][0]["text"], "archive normal")
+        self.assertEqual(self.library.messages(cid, offset=1)["messages"][0]["text"], "archive 100%_complete")
         self.assertEqual(self.library.conversations("' OR 1=1 --")["conversations"], [])
 
     def test_failed_import_is_atomic(self):
@@ -64,7 +65,24 @@ class LibraryTests(unittest.TestCase):
             {"text": "earlier", "timestamp": "2026-01-01T00:30:00Z"},
         ]}).encode(), "timezone.json")
         cid = self.library.conversations()["conversations"][0]["id"]
-        self.assertEqual([row["text"] for row in self.library.messages(cid)["messages"]], ["earlier", "later"])
+        self.assertEqual([row["text"] for row in self.library.messages(cid)["messages"]], ["later", "earlier"])
+
+    def test_newest_first_pages_do_not_repeat_or_skip_equal_timestamp_messages(self):
+        self.library.import_file(json.dumps({"title": "Pagination", "messages": [
+            {"sender": "Tester", "text": f"item-{index}", "timestamp": 1700000000 + index % 3}
+            for index in range(23)]}).encode(), "pagination.json")
+        cid = self.library.conversations()["conversations"][0]["id"]
+        expected = [20, 17, 14, 11, 8, 5, 2, 22, 19, 16, 13, 10, 7, 4, 1, 21, 18, 15, 12, 9, 6, 3, 0]
+        for query in ("", "item-", "tester"):
+            with self.subTest(query=query):
+                messages = []
+                for offset in range(0, 24, 4):
+                    page = self.library.messages(cid, query=query, offset=offset, limit=4)
+                    self.assertEqual(page["total"], 23)
+                    messages.extend(page["messages"])
+                self.assertEqual([row["text"] for row in messages], [f"item-{index}" for index in expected])
+                self.assertEqual(len({row["id"] for row in messages}), 23)
+                self.assertEqual(self.library.messages(cid, query=query, offset=23, limit=4)["messages"], [])
 
     def test_malformed_metadata_and_jsonl_are_rejected(self):
         for payload, name in [(b'{"meta":[],"members":4,"messages":[]}', "bad.json"),

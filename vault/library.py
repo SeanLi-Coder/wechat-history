@@ -261,8 +261,9 @@ class Library:
         Literal substring matching uses SQLite LIKE's ASCII case folding;
         Chinese characters and escaped percent/underscore characters remain
         literal. Existing immutable archives use the same read-only queries.
-        Global messages are newest first; conversation-local views are oldest
-        first. LIMIT is applied to IDs before loading full message bodies.
+        Global and conversation-local messages are newest first, with IDs
+        descending for equal timestamps. LIMIT is applied to IDs before
+        loading full message bodies.
         """
         query = self._search_query(query)
         offset, limit = self._page(offset, limit)
@@ -291,6 +292,7 @@ class Library:
         return result
 
     def messages(self, conversation_id, query="", offset=0, limit=100):
+        """Return a newest-first page, breaking timestamp ties by descending ID."""
         query = self._search_query(query)
         offset, limit = self._page(offset, limit, 500)
         with self.connect() as db:
@@ -301,13 +303,16 @@ class Library:
             clause = "conversation_id=? AND (?='' OR text LIKE ? ESCAPE '\\' OR sender LIKE ? ESCAPE '\\')"
             total = db.execute("SELECT COUNT(*) FROM messages WHERE " + clause, params).fetchone()[0]
             rows = db.execute("SELECT id,sender,text,timestamp,is_self FROM messages WHERE " + clause +
-                              " ORDER BY timestamp,id LIMIT ? OFFSET ?", (*params, limit, offset)).fetchall()
+                              " ORDER BY timestamp DESC,id DESC LIMIT ? OFFSET ?", (*params, limit, offset)).fetchall()
             media = self.media.for_messages([row["id"] for row in rows])
             return {"messages": [{**dict(row), "is_self": bool(row["is_self"]), "media": media.get(row["id"], [])} for row in rows],
                     "total": total, "conversation": dict(conversation)}
 
     def context(self, conversation_id, message_id, limit=100):
-        """Return an indexed chronological window containing one exact message."""
+        """Return an indexed newest-first window containing one exact message.
+
+        Offsets and before/after flags refer to positions in that same order.
+        """
         _, limit = self._page(0, limit, 200)
         if type(message_id) is not int or not 1 <= message_id <= 2 ** 63 - 1:
             raise ValueError("Message ID must be a positive SQLite integer")
@@ -319,11 +324,11 @@ class Library:
             if conversation is None or target is None:
                 raise KeyError("Conversation message not found")
             total = db.execute("SELECT COUNT(*) FROM messages WHERE conversation_id=?", (conversation_id,)).fetchone()[0]
-            before = db.execute("""SELECT COUNT(*) FROM messages WHERE conversation_id=?
-                AND (timestamp,id)<(?,?)""", (conversation_id, target["timestamp"], message_id)).fetchone()[0]
-            offset = max(0, min(before - limit // 2, total - limit))
+            preceding = db.execute("""SELECT COUNT(*) FROM messages WHERE conversation_id=?
+                AND (timestamp,id)>(?,?)""", (conversation_id, target["timestamp"], message_id)).fetchone()[0]
+            offset = max(0, min(preceding - limit // 2, total - limit))
             rows = db.execute("""SELECT id,sender,text,timestamp,is_self FROM messages
-                WHERE conversation_id=? ORDER BY timestamp,id LIMIT ? OFFSET ?""",
+                WHERE conversation_id=? ORDER BY timestamp DESC,id DESC LIMIT ? OFFSET ?""",
                 (conversation_id, limit, offset)).fetchall()
         media = self.media.for_messages([row["id"] for row in rows])
         messages = [{**dict(row), "is_self": bool(row["is_self"]), "media": media.get(row["id"], [])} for row in rows]

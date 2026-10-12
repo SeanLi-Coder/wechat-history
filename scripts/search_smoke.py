@@ -48,6 +48,7 @@ def synthetic_server(work):
     messages[175]["text"] = '银河计划：<img src=x onerror="window.searchXss=true"><script>window.searchXss=true</script>'
     messages[176]["text"] = "字面值 100%_ready 与 [brackets].*"
     messages[177]["text"] = "CaseFoldKeyword"
+    messages[249]["timestamp"] = messages[250]["timestamp"]
     messages[25]["sender"] = messages[226]["sender"] = "测试昵称"
     document = {"conversations": [
         {"title": TITLE, "messages": messages},
@@ -58,7 +59,10 @@ def synthetic_server(work):
     library.import_file(json.dumps(document, ensure_ascii=False).encode(), "synthetic-search.json")
     conversation_id = next(row["id"] for row in library.conversations()["conversations"] if row["title"] == TITLE)
     rows = library.messages(conversation_id, limit=500)["messages"]
-    target = rows[175]["id"]
+    target = next(row["id"] for row in rows if row["text"].startswith("银河计划："))
+    ordered = sorted(rows, key=lambda row: (row["timestamp"], row["id"]), reverse=True)
+    expected_ids = [row["id"] for row in ordered]
+    sender_ids = [row["id"] for row in ordered if row["sender"] == "测试昵称"]
     application = app.Application(state)
     application.status = lambda: {
         "app_name": "拾聊", "version": "test", "config": configuration, "sources": [], "snapshots": [],
@@ -77,7 +81,7 @@ def synthetic_server(work):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}", application.token, conversation_id, target
+        yield f"http://127.0.0.1:{server.server_port}", application.token, conversation_id, target, expected_ids, sender_ids
     finally:
         server.shutdown()
         server.server_close()
@@ -91,11 +95,15 @@ def fit(page):
         assert pane.evaluate("node => node.scrollWidth <= node.clientWidth + 1"), "Messages overflow their pane"
 
 
+def rendered_ids(page):
+    return page.locator(".message-item").evaluate_all("nodes => nodes.map(node => Number(node.dataset.messageId))")
+
+
 def run(browser_path=None, artifacts=None):
     checks = []
     errors, unexpected = [], []
     with tempfile.TemporaryDirectory(prefix="shiliao-search-smoke-") as temporary:
-        with synthetic_server(Path(temporary)) as (origin, token, conversation_id, target_id):
+        with synthetic_server(Path(temporary)) as (origin, token, conversation_id, target_id, expected_ids, sender_ids):
             with sync_playwright() as playwright:
                 options = {"headless": True, "args": ["--mute-audio", "--disable-background-networking", "--disable-component-update", "--disable-sync"]}
                 executable = browser_path or (CHROME if CHROME.exists() else None)
@@ -147,8 +155,12 @@ def run(browser_path=None, artifacts=None):
                     expect(page.locator('[data-action="select-conversation"]')).to_be_focused()
                     page.keyboard.press("Enter")
                     expect(page.locator("#conversation-title")).to_have_text(TITLE)
+                    expect(page.locator(".message-item")).to_have_count(100)
+                    expect(page.locator("#conversation-meta")).to_contain_text("最新在前")
+                    assert rendered_ids(page) == expected_ids[:100], "The initial page is not newest first"
                     page.locator("#message-search").fill("测试昵称")
                     expect(page.locator(".message-item")).to_have_count(2)
+                    assert rendered_ids(page) == sender_ids, "Filtered messages changed the descending order"
                     expect(page.locator(".message-meta mark")).to_have_count(2)
                     page.locator("#message-search").press("Escape")
                     expect(page.locator("#message-search")).to_have_value("")
@@ -184,19 +196,33 @@ def run(browser_path=None, artifacts=None):
                     expect(page.locator("#message-context-bar")).to_be_visible()
                     expect(page.locator(".message-item")).to_have_count(100)
                     expect(page.locator(".message-item.is-target")).to_be_focused()
+                    window_start = expected_ids.index(rendered_ids(page)[0])
+                    assert rendered_ids(page) == expected_ids[window_start:window_start + 100]
                     expect(page.locator(".message-time-divider").first).to_contain_text("2024")
                     assert page.locator(".message-text img,.message-text script,.search-result-preview img").count() == 0
                     assert not page.evaluate("Boolean(window.searchXss)")
+                    expect(page.locator('[data-action="load-earlier"]')).to_have_text("加载更新的消息")
                     page.locator('[data-action="load-earlier"]').click()
                     expect(page.locator(".message-item")).to_have_count(200)
+                    window_start -= 100
+                    assert rendered_ids(page) == expected_ids[window_start:window_start + 200], "Newer context pages skipped or repeated the boundary"
+                    expect(page.locator('[data-action="load-more"]')).to_have_text("加载更早的消息")
                     page.locator('[data-action="load-more"]').click()
                     expect(page.locator(".message-item")).to_have_count(300)
-                    assert len(set(page.locator(".message-item").evaluate_all("nodes => nodes.map(node => node.dataset.messageId)"))) == 300
+                    assert rendered_ids(page) == expected_ids[window_start:window_start + 300], "Older context pages skipped or repeated the boundary"
                     page.locator('[data-action="exit-message-context"]').click()
                     expect(page.locator("#message-context-bar")).to_be_hidden()
                     expect(page.locator(".message-item")).to_have_count(100)
                     expect(page.locator(".message-item.is-target")).to_have_count(0)
                     checks.append("context_target_highlight_bidirectional_pagination_and_safe_text")
+                    assert rendered_ids(page) == expected_ids[:100]
+                    for visible in (200, 300, 350):
+                        expect(page.locator('[data-action="load-more"]')).to_contain_text("加载更早的消息")
+                        page.locator('[data-action="load-more"]').click()
+                        expect(page.locator(".message-item")).to_have_count(visible)
+                        assert rendered_ids(page) == expected_ids[:visible], "Descending pages are not continuous, including equal timestamps"
+                    expect(page.locator('[data-action="load-more"]')).to_have_count(0)
+                    checks.append("newest_first_default_filtered_and_contiguous_pagination")
 
                     for literal in ("100%_ready", "[brackets].*", "casefoldkeyword"):
                         query(literal)

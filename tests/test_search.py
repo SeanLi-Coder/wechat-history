@@ -120,6 +120,7 @@ class SearchTests(unittest.TestCase):
 
     def test_context_contains_exact_target_media_and_contiguous_before_after_pages(self):
         cid, rows = self.add_context_conversation()
+        self.assertEqual([row["text"] for row in rows], [f"context-{index}" for index in range(229, -1, -1)])
         context = self.library.context(cid, rows[115]["id"], limit=60)
         self.assertEqual((context["offset"], context["total"], context["limit"]), (85, 230, 60))
         self.assertTrue(context["has_before"] and context["has_after"])
@@ -127,11 +128,14 @@ class SearchTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in context["messages"]], [row["id"] for row in rows[85:145]])
         target = context["messages"][30]
         self.assertEqual(target["media"][0]["status"], "ready")
-        self.assertTrue(target["is_self"])
+        self.assertEqual(target["text"], "context-114")
+        self.assertFalse(target["is_self"])
         before = self.library.messages(cid, offset=25, limit=60)["messages"]
         after = self.library.messages(cid, offset=145, limit=60)["messages"]
         combined = before + context["messages"] + after
         self.assertEqual([row["id"] for row in combined], [row["id"] for row in rows[25:205]])
+        self.assertEqual(len({row["id"] for row in combined}), 180)
+        self.assertTrue(all(left["id"] > right["id"] for left, right in zip(combined, combined[1:])))
 
     def test_context_edges_and_cross_conversation_ids(self):
         cid, rows = self.add_context_conversation()
@@ -156,7 +160,12 @@ class SearchTests(unittest.TestCase):
         reader_root.mkdir()
         opened = open_archive(path, reader_root)
         self.assertEqual(opened.search("alice")["total"], 117)
+        archived_messages = opened.messages(cid, offset=110, limit=10)["messages"]
+        self.assertEqual([row["text"] for row in archived_messages],
+                         [f"context-{index}" for index in range(119, 109, -1)])
         result = opened.context(cid, rows[115]["id"], limit=60)
+        self.assertEqual((result["offset"], result["has_before"], result["has_after"]), (85, True, True))
+        self.assertEqual([row["id"] for row in result["messages"]], [row["id"] for row in rows[85:145]])
         self.assertEqual(result["messages"][30]["media"][0]["status"], "ready")
         self.assertEqual(hashlib.sha256(path.read_bytes()).digest(), before)
         with opened.connect() as db:
