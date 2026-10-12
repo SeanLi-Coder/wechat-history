@@ -1,0 +1,71 @@
+name: Build portable macOS installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full 40-character commit SHA to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: macOS 15 / ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      BUILD_REF: ${{ inputs.ref }}
+    steps:
+      - name: Require an immutable commit
+        shell: bash
+        run: |
+          if [[ ! "$BUILD_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'The ref input must be a full lowercase 40-character commit SHA.' >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Verify source and native architecture
+        shell: bash
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$BUILD_REF"
+          test "$(uname -m)" = "$BUILD_ARCH"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build native media and database tools
+        run: >-
+          python3 scripts/build_tools.py
+          --output dist/portable-tools
+          --arch ${{ matrix.arch }}
+          --min-macos 15.0
+          --cache dist/portable-cache
+      - name: Build and verify the portable application
+        run: >-
+          python3 scripts/build_portable.py
+          --arch ${{ matrix.arch }}
+          --tools dist/portable-tools
+          --output-dir dist/installers
+          --cache dist/portable-cache
+      - name: Upload verified installers and source materials
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiliao-macos-${{ matrix.arch }}
+          path: dist/installers/
+          if-no-files-found: error
+          retention-days: 14

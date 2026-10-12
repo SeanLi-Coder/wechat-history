@@ -23,6 +23,8 @@ import sys
 import tempfile
 import warnings
 
+from vault.runtime import find_tool
+
 
 MAX_IMAGE_BYTES = 128 * 1024 * 1024
 MAX_IMAGE_PIXELS = 60_000_000
@@ -53,11 +55,7 @@ def _signature(info):
 
 
 def _tool(name):
-    for base in (Path("/opt/homebrew/bin"), Path("/usr/local/bin")):
-        path = base / name
-        if path.is_file() and os.access(path, os.X_OK):
-            return str(path)
-    path = shutil.which(name)
+    path = find_tool(name)
     if path:
         return path
     raise MediaCodecError("dependency_missing", f"The local {name} decoder is not installed.")
@@ -403,6 +401,8 @@ def convert_audio(source, destination, *, format="flac"):
             code = ("import os,resource,sys,pilk; os.umask(0o077); "
                     f"resource.setrlimit(resource.RLIMIT_FSIZE,({MAX_AUDIO_SECONDS * 48000},{MAX_AUDIO_SECONDS * 48000})); "
                     "pilk.decode(sys.argv[1],sys.argv[2],pcm_rate=24000)")
+            # A portable CPython retains -c semantics and its own site-packages.
+            # Reuse that running interpreter rather than searching the host PATH.
             _run([sys.executable, "-c", code, str(staged), str(audio_source)], timeout=60)
             size = audio_source.stat().st_size
             if size <= 0 or size % 2 or size >= MAX_AUDIO_SECONDS * 48000:

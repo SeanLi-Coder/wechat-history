@@ -16,10 +16,11 @@ import math
 import os
 from pathlib import Path
 import re
-import shutil
 import sqlite3
 import stat
 import subprocess
+
+from vault.runtime import find_tool
 
 
 KINDS = {3: "image", 34: "audio", 43: "video"}
@@ -405,8 +406,7 @@ class MediaLocator:
         if key in self._video_probes:
             self._video_probes.move_to_end(key)
             return self._video_probes[key]
-        executable = next((path for path in ("/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe")
-                           if os.path.isfile(path) and os.access(path, os.X_OK)), None) or shutil.which("ffprobe")
+        executable = find_tool("ffprobe")
         metadata = None
         if executable:
             try:

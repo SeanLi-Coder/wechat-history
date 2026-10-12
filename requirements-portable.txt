@@ -1,0 +1,5 @@
+# Runtime dependencies, including transitive packages, for portable bundles.
+-r requirements.txt
+cffi==1.17.1
+pycparser==2.22
+typing_extensions==4.16.0

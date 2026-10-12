@@ -15,7 +15,7 @@ PROJECT = Path(__file__).resolve().parent.parent
 BUNDLE_ID = "local.shiliao.archive"
 
 
-def build_app(bundle=None, python_executable=None):
+def build_app(bundle=None, python_executable=None, *, bundled_python=False, minimum_macos=None):
     bundle = Path(bundle or PROJECT / "dist/拾聊.app").expanduser().absolute()
     runtime = Path(python_executable or sys.executable).expanduser().resolve(strict=True)
     if not runtime.is_file() or not os.access(runtime, os.X_OK):
@@ -27,7 +27,8 @@ def build_app(bundle=None, python_executable=None):
     # Compile first so a compiler error cannot replace an existing launcher.
     with tempfile.TemporaryDirectory(prefix="shiliao-native-build-") as temporary:
         executable = Path(temporary) / "Shiliao"
-        subprocess.run([compiler, "-isysroot", sdk, "-fobjc-arc", "-Os", "-Wall", "-Wextra", "-Werror",
+        target = ["-mmacosx-version-min=" + minimum_macos] if minimum_macos else []
+        subprocess.run([compiler, "-isysroot", sdk, *target, "-fobjc-arc", "-Os", "-Wall", "-Wextra", "-Werror",
                         "-framework", "Foundation", str(PROJECT / "scripts/native_launcher.m"),
                         "-o", str(executable)], check=True)
         macos = bundle / "Contents/MacOS"
@@ -52,14 +53,19 @@ def build_app(bundle=None, python_executable=None):
             bytecode.unlink()
         configuration = {
             "CFBundleName": "拾聊", "CFBundleDisplayName": "拾聊", "CFBundleExecutable": "Shiliao",
-            "CFBundleIdentifier": BUNDLE_ID, "CFBundleVersion": "8",
-            "CFBundleIconFile": "AppIcon", "CFBundleShortVersionString": "0.6.0",
+            "CFBundleIdentifier": BUNDLE_ID, "CFBundleVersion": "9",
+            "CFBundleIconFile": "AppIcon", "CFBundleShortVersionString": "0.7.0",
             "CFBundlePackageType": "APPL", "LSUIElement": True, "NSHighResolutionCapable": True,
             "NSAppDataUsageDescription": "读取你选择的微信账号文件夹，在本机备份并阅读聊天与媒体；不会修改微信原始数据。",
             "NSDocumentsFolderUsageDescription": "Save local WeChat backups to the selected folder.",
             "NSAppleEventsUsageDescription": "Show a local folder picker for backup settings.",
-            "ShiliaoPythonExecutable": str(runtime),
         }
+        if bundled_python:
+            configuration["ShiliaoBundledPython"] = "python/bin/python3"
+        else:
+            configuration["ShiliaoPythonExecutable"] = str(runtime)
+        if minimum_macos:
+            configuration["LSMinimumSystemVersion"] = minimum_macos
         with (bundle / "Contents/Info.plist").open("wb") as output:
             plistlib.dump(configuration, output)
         launcher = macos / "Shiliao"

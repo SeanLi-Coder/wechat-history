@@ -11,6 +11,8 @@ import stat
 import subprocess
 import tempfile
 
+from vault.runtime import find_tool
+
 
 CHUNK_SIZE = 1024 * 1024
 SQLCIPHER_TIMEOUT = 600
@@ -82,10 +84,7 @@ def _copy_file(source: Path, target: Path, expected: tuple) -> None:
 
 
 def _find_sqlcipher() -> str:
-    for candidate in ("/opt/homebrew/bin/sqlcipher", "/usr/local/bin/sqlcipher"):
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    candidate = shutil.which("sqlcipher")
+    candidate = find_tool("sqlcipher")
     if candidate:
         return candidate
     raise SQLCipherExportError("sqlcipher_unavailable", "SQLCipher is required to read a database with a WAL.")

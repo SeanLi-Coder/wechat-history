@@ -41,6 +41,17 @@ int main(int argc, char **argv) {
         umask(0077);
         NSBundle *bundle = [NSBundle mainBundle];
         NSString *runtime = [bundle objectForInfoDictionaryKey:@"ShiliaoPythonExecutable"];
+        NSString *bundled = [bundle objectForInfoDictionaryKey:@"ShiliaoBundledPython"];
+        BOOL portable = [bundled isKindOfClass:[NSString class]];
+        if (portable) {
+            if (![bundled isEqualToString:@"python/bin/python3"]) fail("Invalid bundled runtime location.");
+            NSString *root = [[bundle.resourcePath stringByResolvingSymlinksInPath] stringByAppendingPathComponent:@"python"];
+            runtime = [[bundle.resourcePath stringByAppendingPathComponent:bundled] stringByResolvingSymlinksInPath];
+            if (![runtime hasPrefix:[root stringByAppendingString:@"/"]]) fail("The runtime must remain inside the application.");
+            unsetenv("PYTHONHOME");
+            unsetenv("PYTHONPATH");
+            if (setenv("PYTHONNOUSERSITE", "1", 1) < 0) fail("Could not isolate the bundled runtime.");
+        }
         NSString *payload = [bundle.resourcePath stringByAppendingPathComponent:@"app"];
         NSString *script = [payload stringByAppendingPathComponent:@"app.py"];
         if (![runtime isKindOfClass:[NSString class]] || !runtime.isAbsolutePath ||
