@@ -310,6 +310,34 @@ class UpdateTests(unittest.TestCase):
                     'https://github.com:444/SeanLi-Coder/wechat-history/releases/download/x/a']:
             with self.subTest(url=url), self.assertRaises(updater.UpdateError):updater._url(url)
 
+    def test_bundle_architecture_query_uses_input_first_and_exact_tokens(self):
+        binaries = [str(self.base / 'Contents/MacOS/Shiliao'),
+                    str(self.base / 'Contents/Resources/python/bin/python3')]
+        for output in ['arm64\n', 'x86_64 arm64\n']:
+            calls = []
+            def run(arguments, **kwargs):
+                calls.append(arguments)
+                if arguments[0] == '/usr/bin/lipo':
+                    self.assertIn(arguments[1], binaries)
+                    self.assertEqual(arguments[2:], ['-archs'])
+                    self.assertTrue(kwargs['text'])
+                    return subprocess.CompletedProcess(arguments, 0, stdout=output, stderr='')
+                return subprocess.CompletedProcess(arguments, 0, stdout='', stderr='')
+            with self.subTest(output=output), patch.object(updater.subprocess, 'run', side_effect=run):
+                updater.verify_bundle(self.base, '0.8.0')
+            self.assertEqual([call[1] for call in calls[:2]], binaries)
+            self.assertEqual(calls[-1][0], '/usr/bin/codesign')
+
+    def test_bundle_rejects_wrong_architecture_in_either_executable(self):
+        for outputs in [('x86_64\n',), ('arm64e\n',), ('notarm64\n',), ('\n',), ('arm64\n', 'x86_64\n')]:
+            responses = iter(outputs)
+            def run(arguments, **kwargs):
+                self.assertEqual(arguments[0], '/usr/bin/lipo')
+                return subprocess.CompletedProcess(arguments, 0, stdout=next(responses), stderr='')
+            with self.subTest(outputs=outputs), patch.object(updater.subprocess, 'run', side_effect=run):
+                with self.assertRaisesRegex(updater.UpdateError, 'bundle_signature_or_identity_invalid'):
+                    updater.verify_bundle(self.base, '0.8.0')
+
     def test_build_refuses_existing_outputs_and_older_version(self):
         with self.assertRaises(ValueError):
             build_update(self.base_zip, self.target_zip, self.output, self.key,

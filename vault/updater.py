@@ -328,7 +328,13 @@ def verify_bundle(bundle, version):
         if info.get("ShiliaoBundledPython") != "python/bin/python3":
             raise UpdateError("bundle_runtime_mismatch")
         for path in (bundle / "Contents/MacOS" / executable, bundle / "Contents/Resources/python/bin/python3"):
-            subprocess.run(["/usr/bin/lipo", "-verify_arch", "arm64", str(path)], check=True, capture_output=True)
+            # lipo's variable-length -verify_arch argument consumes everything
+            # after it on some toolchains. Use the documented input-first form
+            # and exact architecture tokens, rather than a substring match.
+            result = subprocess.run(["/usr/bin/lipo", str(path), "-archs"],
+                                    check=True, capture_output=True, text=True)
+            if "arm64" not in result.stdout.split():
+                raise UpdateError("bundle_signature_or_identity_invalid")
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(bundle)], check=True, capture_output=True)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:
         raise UpdateError("bundle_signature_or_identity_invalid") from exc
