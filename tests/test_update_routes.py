@@ -307,6 +307,27 @@ class UpdateRouteTests(unittest.TestCase):
         self.server_thread.join(timeout=2)
         self.assertFalse(self.server_thread.is_alive())
 
+    def test_install_still_schedules_shutdown_when_response_connection_breaks(self):
+        self.update_state["status"] = "ready"
+        handler = object.__new__(Handler)
+        handler.server = self.server
+        handler.path = "/api/update/install"
+        handler.authorize = Mock(return_value=True)
+        handler.body = Mock(return_value={})
+        handler.response = Mock(side_effect=BrokenPipeError("Synthetic disconnected browser"))
+        with patch("app.threading.Thread") as thread:
+            with self.assertRaises(BrokenPipeError):
+                handler.do_POST()
+        self.updater.launch_install.assert_called_once_with(os.getpid())
+        self.assertTrue(self.application.installing_update)
+        self.assertTrue(self.application.update_stop.is_set())
+        thread.assert_called_once()
+        self.assertEqual(thread.call_args.kwargs["name"], "update-shutdown")
+        thread.return_value.start.assert_called_once_with()
+        with patch("app.time.sleep"), patch.object(self.server, "shutdown") as shutdown:
+            thread.call_args.kwargs["target"]()
+        shutdown.assert_called_once_with()
+
     def test_snapshot_open_uses_registered_snapshot_path_and_reader_job(self):
         selected = str(self.root / "registered-raw.zip")
         with patch.object(self.application, "snapshots", return_value=[{"id": "synthetic", "path": selected}]), \
@@ -347,7 +368,7 @@ class UpdateRouteTests(unittest.TestCase):
         self.assertNotEqual(self.application.reader_generation, previous_generation)
         self.assertEqual(self.application.reader_source, {"archived": True, "name": selected.name, "format": "raw"})
         self.assertTrue(result["cache_hit"])
-        self.assertFalse(result["linked_readable"])
+        self.assertNotIn("linked_readable", result)
 
     def test_readable_reader_does_not_invoke_raw_conversion(self):
         selected = self.root / "synthetic-readable.zip"
@@ -360,16 +381,16 @@ class UpdateRouteTests(unittest.TestCase):
         raw.assert_not_called()
         self.assertEqual(result["format"], "readable")
 
-    def test_raw_reader_prefers_a_valid_linked_readable_archive(self):
+    def test_raw_reader_ignores_a_linked_whole_library_and_converts_exact_backup(self):
         selected, linked = self.root / "synthetic-raw.zip", self.root / "synthetic-readable.zip"
         with patch("vault.raw_archive.inspect_archive", return_value={"format": "raw", "signature": [1]}), \
                 patch.object(self.application, "linked_readable", return_value=linked), \
-                patch("vault.raw_archive.open_raw_archive") as raw, \
-                patch("vault.readable_archive.open_archive", return_value=self.archived_library()) as readable:
+                patch("vault.raw_archive.open_raw_archive", return_value=self.archived_library()) as raw, \
+                patch("vault.readable_archive.open_archive") as readable:
             result = self.application.open_reader_archive(selected)
-        readable.assert_called_once_with(linked, self.state)
-        raw.assert_not_called()
-        self.assertTrue(result["linked_readable"])
+        raw.assert_called_once_with(selected, self.state, None, expected_signature=[1])
+        readable.assert_not_called()
+        self.assertNotIn("linked_readable", result)
 
     def test_same_backup_link_uses_both_file_signatures_and_is_exposed_in_snapshots(self):
         selected, linked = self.root / "synthetic-raw.zip", self.root / "synthetic-readable.zip"
@@ -381,12 +402,12 @@ class UpdateRouteTests(unittest.TestCase):
             item = self.application.snapshots()[0]
         self.assertEqual(item["readable_archive"], {"path": str(linked), "name": linked.name, "available": True})
         with patch("vault.raw_archive.inspect_archive", return_value={"format": "raw", "signature": [1]}), \
-                patch("vault.raw_archive.open_raw_archive") as raw, \
-                patch("vault.readable_archive.open_archive", return_value=self.archived_library()) as readable:
+                patch("vault.raw_archive.open_raw_archive", return_value=self.archived_library()) as raw, \
+                patch("vault.readable_archive.open_archive") as readable:
             result = self.application.open_reader_archive(selected)
-        readable.assert_called_once_with(linked, self.state)
-        raw.assert_not_called()
-        self.assertTrue(result["linked_readable"])
+        raw.assert_called_once_with(selected, self.state, None, expected_signature=[1])
+        readable.assert_not_called()
+        self.assertNotIn("linked_readable", result)
 
     def test_changing_either_linked_file_invalidates_association_and_uses_raw_conversion(self):
         for changed_name in ("raw", "readable"):
@@ -405,7 +426,7 @@ class UpdateRouteTests(unittest.TestCase):
                     result = self.application.open_reader_archive(selected)
                 raw.assert_called_once_with(selected, self.state, None, expected_signature=current_signature)
                 readable.assert_not_called()
-                self.assertFalse(result["linked_readable"])
+                self.assertNotIn("linked_readable", result)
 
     def test_missing_linked_readable_falls_back_to_original_backup(self):
         selected, linked = self.root / "synthetic-raw.zip", self.root / "synthetic-readable.zip"

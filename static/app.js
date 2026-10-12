@@ -475,8 +475,8 @@ function renderArchiveTable(snapshots, compact = false) {
     const kinds = element("div", "archive-kinds");
     kinds.append(element("span", "badge badge-neutral", "原始备份"));
     const readable = snapshot.readable_archive;
-    if (readable?.available) kinds.append(element("span", "badge badge-green", "可读归档已准备"));
-    else kinds.append(element("span", "archive-reading-note", "打开时整理聊天"));
+    kinds.append(element("span", "archive-reading-note", "打开时整理聊天"));
+    if (readable?.available) kinds.append(element("span", "badge badge-green", "另存本机可读库"));
     summary.append(kinds);
     summary.append(element("div", "archive-detail", `${formatDate(snapshot.created_at)} · ${count(snapshot.file_count)} 个文件 · ZIP`));
     name.append(icon("archive", "archive-file-icon"), summary);
@@ -498,8 +498,15 @@ function renderArchiveTable(snapshots, compact = false) {
     reveal.title = "在 Finder 中显示";
     const open = actionButton("打开聊天", "snapshot-open", "text-button archive-open", "chat", { id: snapshot.id });
     open.setAttribute("aria-label", `打开 ${snapshotName} 的聊天`);
-    open.title = readable?.available ? "打开这份备份对应的可读归档" : "使用本机有效密钥整理这份原始备份";
-    actions.append(open, details, verify, reveal);
+    open.title = "只读取这份原始备份中的聊天，首次需有效密钥整理，之后可使用缓存";
+    actions.append(open);
+    if (readable?.available && readable.path) {
+      const library = actionButton("打开本次可读库", "snapshot-readable", "text-button archive-readable", null, { path: readable.path });
+      library.title = "包含当时本机所有已整理记录，可能超出这份原始备份的范围";
+      actions.append(library);
+      summary.append(element("div", "archive-reading-scope", "可读库含当时本机所有已整理记录"));
+    }
+    actions.append(details, verify, reveal);
     actionsCell.append(actions);
     row.append(nameCell, size, status, actionsCell);
     body.append(row);
@@ -521,11 +528,13 @@ function renderJob(job) {
       top.append(element("strong", "", "原始备份已保存"));
       const id = job.result?.id || job.result?.snapshot_id;
       const snapshot = state.status?.snapshots?.find(item => item.id === id);
-      const readableReady = snapshot ? snapshot.readable_archive?.available : Boolean(job.result?.readable_archive?.path);
-      panel.append(top, element("p", "job-detail", readableReady
-        ? "可读归档也已准备好，可以直接打开聊天。"
-        : "可以打开这份原始备份，用本机有效密钥整理并阅读聊天。"));
+      const readable = snapshot?.readable_archive?.available ? snapshot.readable_archive : job.result?.readable_archive;
+      panel.append(top, element("p", "job-detail job-reading-note", "「打开聊天」只读取这份原始备份，首次需要有效密钥整理，之后可使用缓存。"));
       if (id) panel.append(actionButton("打开聊天", "snapshot-open", "text-button job-open", "chat", { id }));
+      if (readable?.path) {
+        panel.append(element("p", "job-detail job-reading-note", "另已保存本机可读库，包含当时所有已整理记录，可能超出原始备份的范围。"),
+          actionButton("打开本次可读库", "snapshot-readable", "text-button job-open", "archive", { path: readable.path }));
+      }
       continue;
     }
     if (job.status === "error") {
@@ -560,7 +569,7 @@ function renderJob(job) {
 
 function updateJobButtons() {
   const running = state.status?.job?.status === "running";
-  document.querySelectorAll('[data-action="backup"], [data-action="verify"], [data-action="snapshot-open"], [data-action="read-wechat"], [data-action="reader-export"], [data-action="reader-import"], [data-action="reader-open"], [data-action="reader-live"]').forEach((button) => {
+  document.querySelectorAll('[data-action="backup"], [data-action="verify"], [data-action="snapshot-open"], [data-action="snapshot-readable"], [data-action="read-wechat"], [data-action="reader-export"], [data-action="reader-import"], [data-action="reader-open"], [data-action="reader-live"]').forEach((button) => {
     const canInspectExport = button.dataset.action === "reader-export" && state.status?.job?.type === "reader_export";
     const canInspectImport = button.dataset.action === "reader-import" && state.status?.job?.type === "reader_import";
     button.disabled = (running && !canInspectExport && !canInspectImport) || Boolean(button.dataset.loading);
@@ -889,12 +898,16 @@ async function showManifest(id, button) {
     const verification = state.verificationResults.get(id) || manifest.verification || response.verification;
     const verificationText = verification?.ok === false || verification?.valid === false ? "校验异常" : verified ? "SHA-256 校验通过" : "可运行 SHA-256 完整性校验";
     const files = Array.isArray(manifest.files) ? manifest.files : [];
-    [["归档格式", "ZIP · 微信原始备份"], ["聊天阅读", snapshot.readable_archive?.available ? "已关联可读归档，可直接打开" : "使用本机有效密钥整理后阅读"], ["创建时间", formatDate(manifest.created_at || snapshot.created_at)], ["文件数量", `${count(manifest.file_count ?? snapshot.file_count ?? files.length)} 个`], ["完整性", verificationText], ["原始大小", formatBytes(manifest.original_bytes ?? snapshot.original_bytes)], ["归档大小", formatBytes(manifest.archive_bytes ?? snapshot.archive_bytes)]].forEach(([label, value]) => {
+    [["归档格式", "ZIP · 微信原始备份"], ["聊天阅读", "只读取这份原始备份；首次使用有效密钥整理，之后可使用缓存"], ["创建时间", formatDate(manifest.created_at || snapshot.created_at)], ["文件数量", `${count(manifest.file_count ?? snapshot.file_count ?? files.length)} 个`], ["完整性", verificationText], ["原始大小", formatBytes(manifest.original_bytes ?? snapshot.original_bytes)], ["归档大小", formatBytes(manifest.archive_bytes ?? snapshot.archive_bytes)]].forEach(([label, value]) => {
       const item = element("div");
       item.append(element("dt", "", label), element("dd", "", value));
       metadata.append(item);
     });
     content.append(metadata, actionButton("打开聊天", "snapshot-open", "text-button", "chat", { id }));
+    if (snapshot.readable_archive?.available && snapshot.readable_archive.path) {
+      content.append(element("p", "archive-reading-scope", "本次另存的可读库包含当时本机所有已整理记录，可能超出这份原始备份的范围。"),
+        actionButton("打开本次可读库", "snapshot-readable", "text-button", "archive", { path: snapshot.readable_archive.path }));
+    }
     if (verification?.errors?.length) content.append(element("p", "info-note", `校验发现异常：${verification.errors.join("；")}`));
     if (manifest.skipped_symlinks?.length) content.append(element("p", "info-note", `已跳过 ${count(manifest.skipped_symlinks.length)} 个符号链接；链接指向的外部文件不在本归档中。`));
     if (files.length) {
@@ -1392,7 +1405,7 @@ async function revealExport(button) {
   }, "正在定位…");
 }
 
-async function startReaderArchive(action, button) {
+async function startReaderArchive(action, button, selectedPath = null) {
   await withBusy(button, async () => {
     if (action === "live") {
       await api("/api/reader/live", { method: "POST", body: {} });
@@ -1401,16 +1414,17 @@ async function startReaderArchive(action, button) {
       toast("已返回本机聊天记录。");
       return;
     }
-    let path;
-    if (action === "open") {
+    let path = selectedPath;
+    if (action === "open" && !path) {
       const selection = await api("/api/pick-archive", { method: "POST", body: {} });
       if (!selection.path) return;
       path = selection.path;
     }
     const result = await api(action === "open" ? "/api/reader/archive" : "/api/reader/export", { method: "POST", body: action === "open" ? { path } : {} });
     state.lastRunningJob = { id: result.job_id, type: action === "open" ? "reader_open" : "reader_export", status: "running" };
+    if (selectedPath) showPage("reader");
     await refreshStatus({ silent: true });
-  }, action === "open" ? "选择归档…" : action === "live" ? "切换中…" : "正在保存…");
+  }, action === "open" ? selectedPath ? "正在打开…" : "选择归档…" : action === "live" ? "切换中…" : "正在保存…");
 }
 
 function renderReaderEmpty() {
@@ -1806,6 +1820,7 @@ function bindEvents() {
       details: () => showManifest(id, button),
       reveal: () => revealSnapshot(id, button),
       "snapshot-open": () => { $("manifest-dialog").close(); openSnapshot(id, button); },
+      "snapshot-readable": () => { $("manifest-dialog").close(); startReaderArchive("open", button, button.dataset.path); },
       "update-check": () => changeUpdate("check"),
       "update-install": () => changeUpdate("install"),
       refresh: () => withBusy(button, () => refreshStatus(), "刷新中…"),

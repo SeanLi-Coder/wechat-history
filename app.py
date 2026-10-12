@@ -419,10 +419,7 @@ class Application:
         from vault.raw_archive import inspect_archive, open_raw_archive
         from vault.readable_archive import open_archive
         info = inspect_archive(archive_path)
-        linked = self.linked_readable(archive_path) if info["format"] == "raw" else None
-        if linked:
-            opened = open_archive(linked, self.state_dir)
-        elif info["format"] == "raw":
+        if info["format"] == "raw":
             opened = open_raw_archive(archive_path, self.state_dir, progress,
                                       expected_signature=info["signature"])
         else:
@@ -431,7 +428,7 @@ class Application:
             self.archive_library = opened
             self.reader_source = {"archived": True, "name": Path(archive_path).name, "format": info["format"]}
             self.reader_generation = secrets.token_hex(16)
-        return {**opened.stats(), "format": info["format"], "linked_readable": bool(linked),
+        return {**opened.stats(), "format": info["format"],
                 "cache_hit": bool(getattr(opened, "raw_cache_hit", False))}
 
     def status(self):
@@ -773,11 +770,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.response(self.app.check_updates(), 202)
             if path == "/api/update/install":
                 result = self.app.install_update()
-                self.response(result, 202)
                 def shutdown():
                     time.sleep(0.3)
                     self.server.shutdown()
-                threading.Thread(target=shutdown, daemon=True, name="update-shutdown").start()
+                try:
+                    self.response(result, 202)
+                finally:
+                    # Installation must finish even if the browser disconnects.
+                    threading.Thread(target=shutdown, daemon=True, name="update-shutdown").start()
                 return
             if path == "/api/backup":
                 return self.response(self.app.start_job("backup"), 202)

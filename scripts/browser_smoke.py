@@ -1208,6 +1208,7 @@ def check_update_settings(page, config_path: Path, artifacts: Path, checks: list
 def check_backup_reading_entry(page, snapshot: dict, checks: list) -> None:
     """Verify raw/readable routing and progress without reading encrypted personal data."""
     fixture = {"job": None, "readable": False, "calls": []}
+    readable_path = str(Path(snapshot["path"]).with_name("readable-synthetic.zip"))
 
     def status_response(route):
         response = route.fetch()
@@ -1217,7 +1218,7 @@ def check_backup_reading_entry(page, snapshot: dict, checks: list) -> None:
         for item in payload.get("snapshots", []):
             if item["id"] == snapshot["id"]:
                 if fixture["readable"]:
-                    item["readable_archive"] = {"path": str(Path(snapshot["path"]).with_name("readable-synthetic.zip")),
+                    item["readable_archive"] = {"path": readable_path,
                                                 "name": "readable-synthetic.zip", "available": True}
                 else:
                     item.pop("readable_archive", None)
@@ -1230,9 +1231,10 @@ def check_backup_reading_entry(page, snapshot: dict, checks: list) -> None:
         if path.endswith("/open"):
             assert route.request.post_data_json == {}
         else:
-            assert route.request.post_data_json == {"path": snapshot["path"]}
+            assert route.request.post_data_json in ({"path": snapshot["path"]}, {"path": readable_path})
+        is_readable = route.request.post_data_json.get("path") == readable_path
         fixture["job"] = {"id": "synthetic-raw-reader", "type": "reader_open", "status": "running",
-                          "progress": {"phase": "raw_extract", "done_files": 1, "total_files": 2,
+                          "progress": {"phase": "readable_open" if is_readable else "raw_extract", "done_files": 1, "total_files": 2,
                                        "done_bytes": 1024, "total_bytes": 2048, "current_file": "正在读取原始备份文件"}}
         route.fulfill(status=202, json={"job_id": fixture["job"]["id"]})
 
@@ -1261,14 +1263,26 @@ def check_backup_reading_entry(page, snapshot: dict, checks: list) -> None:
         fixture["job"] = None
         page.evaluate("() => refreshStatus({silent: true})")
         go_to(page, "archives")
-        expect(page.locator("#all-archives .archive-kinds")).to_contain_text("可读归档已准备")
-        expect(page.locator('#all-archives [data-action="snapshot-open"]')).to_have_attribute("title", "打开这份备份对应的可读归档")
+        expect(page.locator("#all-archives .archive-kinds")).to_contain_text("另存本机可读库")
+        expect(page.locator("#all-archives .archive-reading-scope")).to_have_text("可读库含当时本机所有已整理记录")
+        expect(page.locator('#all-archives [data-action="snapshot-open"]')).to_have_attribute("title", "只读取这份原始备份中的聊天，首次需有效密钥整理，之后可使用缓存")
+        page.locator('#all-archives [data-action="snapshot-open"]').click()
+        expect(page.locator("#reader-job")).to_contain_text("正在校验并展开原始备份")
+        fixture["job"] = None
+        page.evaluate("() => refreshStatus({silent: true})")
+        go_to(page, "archives")
+        page.locator('#all-archives [data-action="snapshot-readable"]').click()
+        expect(page.locator("#page-reader")).to_be_visible()
+        expect(page.locator("#reader-job")).to_contain_text("正在打开压缩归档")
+        fixture["job"] = None
+        page.evaluate("() => refreshStatus({silent: true})")
         go_to(page, "reader")
         expect(page.locator('[data-action="reader-open"]')).to_have_attribute("title", "打开拾聊可读归档或微信原始备份 ZIP")
         page.locator('[data-action="reader-open"]').click()
         expect(page.locator("#reader-job")).to_contain_text("正在校验并展开原始备份")
-        assert fixture["calls"] == [f"/api/snapshots/{snapshot['id']}/open", "/api/reader/archive"]
-        checks.append("linked_readable_archive_is_labeled_and_reader_picker_accepts_raw_backup_path")
+        assert fixture["calls"] == [f"/api/snapshots/{snapshot['id']}/open", f"/api/snapshots/{snapshot['id']}/open",
+                                    "/api/reader/archive", "/api/reader/archive"]
+        checks.append("raw_backup_and_whole_readable_library_have_separate_scope_and_open_actions")
     finally:
         page.unroute("**/api/status", status_response)
         page.unroute("**/api/snapshots/*/open", start_open)
