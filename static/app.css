@@ -359,6 +359,17 @@ select { appearance: auto; }
 .dialog-heading .eyebrow { margin-bottom: 5px; }
 .export-dialog { max-width: 640px; margin: auto; }
 .export-dialog .dialog-heading { margin-bottom: 16px; }
+.reader-account-fieldset { min-width: 0; margin: 20px 0 0; padding: 0; border: 0; }
+.reader-account-fieldset legend { margin-bottom: 10px; color: #c0cec5; font-size: 13px; }
+.reader-account-options { display: grid; gap: 9px; max-height: 36dvh; overflow: auto; padding: 3px; }
+.reader-account-option { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid #526057; border-radius: 8px; background: #252e29; cursor: pointer; }
+.reader-account-option:has(input:checked) { border-color: #83c997; background: #324a3b; }
+.reader-account-option:has(input:focus-visible) { outline: 2px solid #a8dfb8; outline-offset: 1px; }
+.reader-account-option input { flex: 0 0 18px; width: 18px; height: 18px; margin: 0; accent-color: #91dda7; }
+.reader-account-option-text { min-width: 0; overflow-wrap: anywhere; }
+.reader-account-option-text strong { display: block; color: #e0ebe3; font-size: 14px; font-weight: 550; }
+.reader-account-option-text small { display: block; margin-top: 4px; color: #aabcaf; font-size: 12px; }
+.reader-account-dialog .export-error { overflow-wrap: anywhere; }
 .export-source-label { color: #aebdb3; font-size: 12px; }
 .export-source { margin-top: 3px; color: #e5eee8; font-size: 15px; font-weight: 550; overflow-wrap: anywhere; }
 .export-scope-note { margin-top: 10px; color: #c0d9c7; font-size: 13px; line-height: 1.8; }

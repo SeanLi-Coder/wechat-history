@@ -4,15 +4,15 @@
 
 ## 用户安装
 
-下载 [M 系列 DMG](https://github.com/SeanLi-Coder/wechat-history/releases/download/v0.8.0/shiliao-0.8.0-macos-arm64.dmg)，或从项目 [Releases](https://github.com/SeanLi-Coder/wechat-history/releases) 获取 `arm64.app.zip`。打开 DMG 或解压 ZIP 后，把“拾聊.app”放到“应用程序”，从该固定位置启动。安装包的界面显示在默认浏览器中。
+下载 [M 系列 DMG](https://github.com/SeanLi-Coder/wechat-history/releases/download/v0.8.1/shiliao-0.8.1-macos-arm64.dmg)，或从项目 [Releases](https://github.com/SeanLi-Coder/wechat-history/releases) 获取 `arm64.app.zip`。打开 DMG 或解压 ZIP 后，把“拾聊.app”放到“应用程序”，从该固定位置启动。安装包的界面显示在默认浏览器中。
 
 当前应用使用 ad-hoc 签名，没有 Developer ID 签名或 Apple 公证。首次打开可能被 Gatekeeper 拦截。用户确认来源并核对 SHA-256 后，可按 [Apple 官方说明](https://support.apple.com/en-us/102445)，先尝试打开，再到“系统设置 → 隐私与安全性 → 仍要打开”。受管理电脑可能不允许此操作。不得声称无系统提示，不能用关闭 Gatekeeper、清除 quarantine 或修改 TCC 的命令代替安装说明。
 
 已有可读 ZIP 可以直接打开或导入，不需要数据库密钥。新电脑上的原生微信读取仍需自己的有效密钥；M 系列 Mac 的手动初始化依赖微信版本、系统 LLDB 和匹配的 Apple Python。安装包不自动取钥，也不保证所有微信版本均适用。
 
-v0.7.x 及更早版本没有自动更新入口，需先用完整 DMG 或 `.app.zip` 安装一次 v0.8.0。v0.8 起默认每 12 小时检查并下载更新；运行中由用户点击“重启更新”，启用自动更新时下次启动可安装已准备版本。备份或媒体整理未结束时延后安装。软件按文件增量更新与聊天完整 ZIP 备份是两项不同功能。
+v0.7.x 及更早版本没有自动更新入口，需先用完整 DMG 或 `.app.zip` 安装一次 v0.8.1。v0.8 起默认每 12 小时检查并下载更新；运行中由用户点击“重启更新”，启用自动更新时下次启动可安装已准备版本。备份或媒体整理未结束时延后安装。软件按文件增量更新与聊天完整 ZIP 备份是两项不同功能。
 
-从 v0.8 起，“打开归档”也识别原始 `wechat-*.zip`：已有对应密钥时生成隔离只读阅读库及媒体缓存，不修改原 ZIP 或合并进本机库；缺密钥时提示初始化或导入密钥。首次处理有磁盘空间预检，较大备份可能耗时；之后按 ZIP 签名和清单摘要复用缓存。多账号备份仍须改选单账号备份，缺失素材不会由消息记录自动恢复。
+从 v0.8 起，“打开归档”也识别原始 `wechat-*.zip`：已有对应密钥时生成隔离只读阅读库及媒体缓存，不修改原 ZIP 或合并进本机库；缺密钥时提示初始化或导入密钥。首次处理有磁盘空间预检，较大备份可能耗时；之后按 ZIP 签名和清单摘要复用缓存。从 v0.8.1 起，多账号备份先选择一个账号后打开，各账号分别缓存，旧单账号缓存仍兼容。首次处理仍完整校验并解包 ZIP，选择账号只限定导入与阅读范围。跨 Mac 可先在已有密钥的电脑“导出全部”生成可读归档；缺失素材不会由消息记录自动恢复。
 
 “打开本次可读库”是备份结果中的独立操作，打开当次生成的完整本机阅读库，可能包含其他已导入记录。原始 ZIP 的阅读入口始终使用隔离副本，不按同次关联自动替换为完整本机库。
 
@@ -48,10 +48,10 @@ python3 scripts/build_portable.py \
 
 `dist/installers/` 输出以下四个 `arm64` 文件，每个另附一份同名 `.sha256`，共八个文件：
 
-- `shiliao-0.8.0-macos-arm64.dmg`；
-- `shiliao-0.8.0-macos-arm64.app.zip`；
-- `shiliao-0.8.0-macos-arm64-manifest.json`；
-- `shiliao-0.8.0-macos-arm64-third-party-sources.zip`。
+- `shiliao-0.8.1-macos-arm64.dmg`；
+- `shiliao-0.8.1-macos-arm64.app.zip`；
+- `shiliao-0.8.1-macos-arm64-manifest.json`；
+- `shiliao-0.8.1-macos-arm64-third-party-sources.zip`。
 
 清单记录系统下限、架构、签名状态、检查结果及资产摘要；第三方源码 ZIP 提供对应版本的源码、许可和构建材料。应用包内的 `Contents/Resources/` 保留 `THIRD_PARTY_NOTICES.md`、`DEPENDENCIES.json`、`python/` 中的各 Python 包许可，以及 `tools/licenses/`。Python 运行时及其原生依赖的 `PYTHON.json`、`LICENSES.json` 和 `licenses/` 位于 `Contents/Resources/licenses/python-build-standalone/`；同一目录树也保存在第三方源码 ZIP 的 `third-party-sources/python-build-standalone/` 中。
 
@@ -77,7 +77,7 @@ python3 scripts/build_update.py \
   --target "$SHILIAO_TARGET_APP_ZIP" \
   --output dist/update-release \
   --private-key "$SHILIAO_UPDATE_SIGNING_KEY" \
-  --release-url https://github.com/SeanLi-Coder/wechat-history/releases/download/v0.8.0 \
+  --release-url https://github.com/SeanLi-Coder/wechat-history/releases/download/v0.8.1 \
   --sequence "$SHILIAO_UPDATE_SEQUENCE"
 ```
 
@@ -127,11 +127,11 @@ open dist/拾聊.app
 ## 源码发布资产与范围
 
 ```bash
-python3 -B scripts/package_release.py --check --version v0.8.0
-python3 -B scripts/package_release.py --version v0.8.0
+python3 -B scripts/package_release.py --check --version v0.8.1
+python3 -B scripts/package_release.py --version v0.8.1
 ```
 
-默认在 `dist/releases/` 输出 `shiliao-0.8.0-source.zip` 与对应 `.sha256`。ZIP 顶层为 `shiliao-0.8.0/`，`RELEASE-MANIFEST.json` 记录逐文件相对路径、字节数与 SHA-256。版本读取 `vault/__init__.py` 的字面量；传入不一致的版本会失败，不执行该模块。
+默认在 `dist/releases/` 输出 `shiliao-0.8.1-source.zip` 与对应 `.sha256`。ZIP 顶层为 `shiliao-0.8.1/`，`RELEASE-MANIFEST.json` 记录逐文件相对路径、字节数与 SHA-256。版本读取 `vault/__init__.py` 的字面量；传入不一致的版本会失败，不执行该模块。
 
 唯一源码打包名单是 `scripts/package_release.py` 的 `RELEASE_FILES`，不使用递归通配。添加脚本、测试、工作流或文档时，必须审阅并显式更新名单。可用 `--list` 核对；可用 `--output-dir` 指定空输出目录。已有同名文件不会被覆盖。
 
@@ -148,7 +148,7 @@ python3 -m pip install -r requirements-dev.txt
 python3 -B -m unittest discover -s tests -v
 python3 -B scripts/browser_smoke.py
 python3 -B scripts/search_smoke.py
-python3 -B scripts/package_release.py --check --version v0.8.0
+python3 -B scripts/package_release.py --check --version v0.8.1
 ```
 
 浏览器测试需要声明的 Playwright / Chrome 环境；不得上传真实聊天截图或私密验证输出。`scripts/test_key_capture.py` 是人工进程和人工数据库的独立 LLDB 检查，不属于普通安装包构建步骤。

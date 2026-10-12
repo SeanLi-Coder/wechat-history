@@ -341,6 +341,69 @@ class UpdateRouteTests(unittest.TestCase):
             self.assertEqual(self.request("POST", "/api/snapshots/missing/open", {})[0], 404)
         start.assert_not_called()
 
+    def test_archive_preview_is_authenticated_and_does_not_start_or_switch_reader(self):
+        selected = str(self.root / "synthetic-multiple.zip")
+        info = {"format": "raw", "accounts": 2,
+                "account_options": [{"id": "a" * 64, "label": "synthetic-one"},
+                                    {"id": "b" * 64, "label": "synthetic-two"}]}
+        generation = self.application.reader_generation
+        old_source = dict(self.application.reader_source)
+        with patch("vault.raw_archive.inspect_archive", return_value=info) as inspect, \
+                patch.object(self.application, "start_job") as start:
+            self.assertEqual(self.request("POST", "/api/reader/archive-info", {"path": selected}, authorized=False)[0], 401)
+            inspect.assert_not_called()
+            status, result = self.request("POST", "/api/reader/archive-info", {"path": selected})
+            self.assertEqual(status, 200)
+            self.assertEqual(result, {**info, "filename": "synthetic-multiple.zip"})
+            with patch.object(self.application, "snapshots", return_value=[{"id": "synthetic", "path": selected}]):
+                status, result = self.request("POST", "/api/snapshots/synthetic/open-info", {"path": "/ignored.zip"})
+                self.assertEqual((status, result), (200, {**info, "filename": "synthetic-multiple.zip"}))
+            self.assertEqual(inspect.call_count, 2)
+            inspect.assert_called_with(selected)
+            start.assert_not_called()
+        self.assertEqual(self.application.reader_generation, generation)
+        self.assertEqual(self.application.reader_source, old_source)
+
+    def test_account_selection_reaches_jobs_from_both_open_routes(self):
+        selected, account_id = str(self.root / "synthetic-multiple.zip"), "a" * 64
+        with patch.object(self.application, "snapshots", return_value=[{"id": "synthetic", "path": selected}]), \
+                patch.object(self.application, "start_job", return_value={"job_id": "selected"}) as start:
+            for route in ("/api/reader/archive", "/api/snapshots/synthetic/open"):
+                with self.subTest(route=route):
+                    self.assertEqual(self.request("POST", route, {"path": selected, "account_id": account_id})[0], 202)
+                    start.assert_called_with("reader_open", archive_path=selected, account_id=account_id)
+                    start.reset_mock()
+                    for invalid in ([], {}, True, 9, "", "../account", "a" * 63):
+                        self.assertEqual(self.request("POST", route, {"path": selected, "account_id": invalid})[0], 400)
+                    start.assert_not_called()
+
+    def test_archive_preview_validates_paths_and_respects_operation_lock(self):
+        with patch("vault.raw_archive.inspect_archive") as inspect:
+            for invalid in (None, {}, 12, "relative.zip"):
+                self.assertEqual(self.request("POST", "/api/reader/archive-info", {"path": invalid})[0], 400)
+            with self.occupied_operation():
+                self.assertEqual(self.request("POST", "/api/reader/archive-info", {"path": str(self.root / "archive.zip")})[0], 400)
+            inspect.assert_not_called()
+
+    def test_selected_raw_account_is_forwarded_and_shown_after_successful_job(self):
+        selected, account_id = str(self.root / "synthetic-multiple.zip"), "a" * 64
+        opened = self.archived_library(cache_hit=True)
+        opened.raw_account = {"id": account_id, "label": "Synthetic account"}
+        with patch("vault.raw_archive.inspect_archive", return_value={"format": "raw", "signature": [1]}), \
+                patch("vault.raw_archive.open_raw_archive", return_value=opened) as raw:
+            self.application.start_job("reader_open", archive_path=selected, account_id=account_id)
+            self.wait_job()
+        self.assertEqual(raw.call_args.kwargs, {"expected_signature": [1], "account_id": account_id})
+        self.assertEqual(self.application.reader_source["account_id"], account_id)
+        self.assertEqual(self.application.reader_source["account_label"], "Synthetic account")
+
+    def test_readable_archive_rejects_stale_raw_account_selection(self):
+        with patch("vault.raw_archive.inspect_archive", return_value={"format": "readable"}), \
+                patch("vault.readable_archive.open_archive") as readable:
+            with self.assertRaises(ValueError):
+                self.application.open_reader_archive(self.root / "synthetic.zip", account_id="a" * 64)
+        readable.assert_not_called()
+
     def test_picker_archive_route_validates_path_and_delegates_reader_job(self):
         selected = str(self.root / "raw-or-readable.zip")
         with patch.object(self.application, "start_job", return_value={"job_id": "synthetic-job"}) as start:

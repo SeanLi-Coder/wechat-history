@@ -61,6 +61,8 @@ const state = {
   readerImport: null,
   importRequest: 0,
   importTrigger: null,
+  readerAccount: null,
+  readerOpenBusy: false,
   updates: null,
   updateBusy: "",
   updateError: "",
@@ -572,7 +574,7 @@ function updateJobButtons() {
   document.querySelectorAll('[data-action="backup"], [data-action="verify"], [data-action="snapshot-open"], [data-action="snapshot-readable"], [data-action="read-wechat"], [data-action="reader-export"], [data-action="reader-import"], [data-action="reader-open"], [data-action="reader-live"]').forEach((button) => {
     const canInspectExport = button.dataset.action === "reader-export" && state.status?.job?.type === "reader_export";
     const canInspectImport = button.dataset.action === "reader-import" && state.status?.job?.type === "reader_import";
-    button.disabled = (running && !canInspectExport && !canInspectImport) || Boolean(button.dataset.loading);
+    button.disabled = (running && !canInspectExport && !canInspectImport) || state.readerOpenBusy || Boolean(button.dataset.loading);
     if (running && button.title !== "请等待当前任务完成") {
       button.dataset.idleTitle = button.getAttribute("title") || "";
       button.title = "请等待当前任务完成";
@@ -582,6 +584,7 @@ function updateJobButtons() {
       delete button.dataset.idleTitle;
     }
   });
+  renderReaderAccountDialog();
   renderUpdates();
 }
 
@@ -720,6 +723,9 @@ function renderStatus(status, acceptUpdates = true) {
   $("reader-source-chip").textContent = archived ? "归档阅读" : "本机记录";
   $("reader-source-title").textContent = archived ? `正在阅读归档：${status.reader_source.name || "可读归档"}` : "本机记录";
   $("reader-source-description").textContent = archived ? "对话与媒体从这份归档中读取。返回本机记录后可查看最近更新。" : "聊天和可用媒体保存在本机，备份时一并保存可读归档。";
+  if (archived && status.reader_source.account_label) {
+    $("reader-source-description").textContent = `当前账号：${status.reader_source.account_label}。只显示该账号在这份备份中的聊天与媒体。`;
+  }
   const readyMedia = (status.media?.items || []).filter(item => item.status === "ready" && ["image", "audio", "video"].includes(item.kind));
   if (readyMedia.length) $("reader-source-description").textContent += ` 已保存 ${readyMedia.map(item => `${count(item.count)} 条${mediaLabel(item.kind)}`).join("、")}。`;
   document.querySelector('[data-action="reader-live"]').hidden = !archived;
@@ -879,11 +885,92 @@ async function revealSnapshot(id, button) {
 
 async function openSnapshot(id, button) {
   await withBusy(button, async () => {
-    const result = await api(`/api/snapshots/${encodeURIComponent(id)}/open`, { method: "POST", body: {} });
-    state.lastRunningJob = { id: result.job_id, type: "reader_open", status: "running" };
-    showPage("reader");
-    await refreshStatus({ silent: true });
+    const endpoint = `/api/snapshots/${encodeURIComponent(id)}/open`;
+    await prepareReaderArchive(`${endpoint}-info`, endpoint, {}, button);
   }, "正在打开…");
+}
+
+function renderReaderAccountDialog() {
+  const pending = state.readerAccount;
+  if (!pending) return;
+  const busy = Boolean(pending.starting);
+  const running = state.status?.job?.status === "running";
+  $("reader-account-start").disabled = busy || running || !pending.accountId;
+  $("reader-account-start").textContent = busy ? "正在打开…" : "打开所选账号";
+  $("reader-account-form").setAttribute("aria-busy", String(busy));
+  document.querySelectorAll('[data-action="reader-account-close"]').forEach(button => { button.disabled = busy; });
+  $("reader-account-options").querySelectorAll("input").forEach(input => { input.disabled = busy; });
+  $("reader-account-error").textContent = pending.error || "";
+  $("reader-account-error").hidden = !pending.error;
+  $("reader-account-status").textContent = busy ? "正在启动归档读取，完成后会显示所选账号。"
+    : running ? "当前任务正在执行，完成后可以打开所选账号。" : "请选择一个账号。此次只读取所选账号，其他账号可稍后重新打开。";
+}
+
+async function launchReaderArchive(endpoint, body) {
+  const result = await api(endpoint, { method: "POST", body });
+  state.lastRunningJob = { id: result.job_id, type: "reader_open", status: "running" };
+  showPage("reader");
+  await refreshStatus({ silent: true });
+}
+
+async function prepareReaderArchive(infoEndpoint, endpoint, body, trigger) {
+  if (state.readerOpenBusy || state.readerAccount) return;
+  state.readerOpenBusy = true;
+  updateJobButtons();
+  try {
+    const info = await api(infoEndpoint, { method: "POST", body });
+    const options = Array.isArray(info.account_options) ? info.account_options : [];
+    if (info.format !== "raw" || Number(info.accounts) <= 1) {
+      const account = options.length === 1 ? options[0].id : null;
+      await launchReaderArchive(endpoint, account ? { ...body, account_id: account } : body);
+      return;
+    }
+    if (options.length < 2 || options.some(option => typeof option.id !== "string" || !option.id)) {
+      throw new Error("暂时无法读取这份归档的账号列表，请重新打开归档后再试。");
+    }
+    state.readerAccount = { endpoint, body, trigger, accountId: "", starting: false, error: "" };
+    $("reader-account-file").textContent = info.filename || "微信原始备份";
+    $("reader-account-count").textContent = `发现 ${count(options.length)} 个微信账号`;
+    const choices = options.map((option, index) => {
+      const label = element("label", "reader-account-option");
+      const input = element("input");
+      input.type = "radio";
+      input.name = "archive-account";
+      input.value = option.id;
+      input.id = `reader-account-${index}`;
+      const text = element("span", "reader-account-option-text");
+      text.append(element("strong", "", option.label || "未命名微信账号"));
+      text.append(element("small", "", `账号 ${index + 1}`));
+      label.append(input, text);
+      return label;
+    });
+    $("reader-account-options").replaceChildren(...choices);
+    renderReaderAccountDialog();
+    $("reader-account-dialog").showModal();
+  } finally {
+    state.readerOpenBusy = false;
+    updateJobButtons();
+  }
+}
+
+async function startReaderAccount(event) {
+  event.preventDefault();
+  const pending = state.readerAccount;
+  if (!pending || !pending.accountId || pending.starting || state.status?.job?.status === "running") return;
+  pending.starting = true;
+  pending.error = "";
+  state.readerOpenBusy = true;
+  updateJobButtons();
+  try {
+    await launchReaderArchive(pending.endpoint, { ...pending.body, account_id: pending.accountId });
+    $("reader-account-dialog").close();
+  } catch (error) {
+    pending.error = error.message || "归档未能打开，请重试。";
+  } finally {
+    pending.starting = false;
+    state.readerOpenBusy = false;
+    updateJobButtons();
+  }
 }
 
 async function showManifest(id, button) {
@@ -1420,8 +1507,12 @@ async function startReaderArchive(action, button, selectedPath = null) {
       if (!selection.path) return;
       path = selection.path;
     }
-    const result = await api(action === "open" ? "/api/reader/archive" : "/api/reader/export", { method: "POST", body: action === "open" ? { path } : {} });
-    state.lastRunningJob = { id: result.job_id, type: action === "open" ? "reader_open" : "reader_export", status: "running" };
+    if (action === "open") {
+      await prepareReaderArchive("/api/reader/archive-info", "/api/reader/archive", { path }, button);
+      return;
+    }
+    const result = await api("/api/reader/export", { method: "POST", body: {} });
+    state.lastRunningJob = { id: result.job_id, type: "reader_export", status: "running" };
     if (selectedPath) showPage("reader");
     await refreshStatus({ silent: true });
   }, action === "open" ? selectedPath ? "正在打开…" : "选择归档…" : action === "live" ? "切换中…" : "正在保存…");
@@ -1845,6 +1936,7 @@ function bindEvents() {
       "export-reload": () => openExportDialog(button, true),
       "export-again": () => openExportDialog(button, true),
       "reader-open": () => startReaderArchive("open", button),
+      "reader-account-close": () => $("reader-account-dialog").close(),
       "reader-live": () => startReaderArchive("live", button),
       "reader-back": returnToConversations,
       "toggle-message-search": toggleMessageSearch,
@@ -1874,6 +1966,23 @@ function bindEvents() {
   document.querySelector(".brand").addEventListener("click", (event) => { event.preventDefault(); showPage("overview"); });
   $("settings-form").addEventListener("submit", saveSettings);
   $("update-enabled").addEventListener("change", () => changeUpdate("settings"));
+  $("reader-account-form").addEventListener("submit", startReaderAccount);
+  $("reader-account-options").addEventListener("change", event => {
+    if (!state.readerAccount || !event.target.matches('input[name="archive-account"]')) return;
+    state.readerAccount.accountId = event.target.value;
+    state.readerAccount.error = "";
+    renderReaderAccountDialog();
+  });
+  $("reader-account-dialog").addEventListener("cancel", event => {
+    if (state.readerAccount?.starting) event.preventDefault();
+  });
+  $("reader-account-dialog").addEventListener("close", () => {
+    const trigger = state.readerAccount?.trigger;
+    state.readerAccount = null;
+    $("reader-account-options").replaceChildren();
+    if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+    updateJobButtons();
+  });
   $("reader-import-dialog").addEventListener("close", () => {
     state.importTrigger?.focus({ preventScroll: true });
   });

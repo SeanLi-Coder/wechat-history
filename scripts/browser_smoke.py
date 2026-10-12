@@ -1205,9 +1205,10 @@ def check_update_settings(page, config_path: Path, artifacts: Path, checks: list
         expect(page.locator("#connection-banner")).to_be_hidden()
 
 
-def check_backup_reading_entry(page, snapshot: dict, checks: list) -> None:
+def check_backup_reading_entry(page, snapshot: dict, checks: list, artifacts: Path) -> None:
     """Verify raw/readable routing and progress without reading encrypted personal data."""
-    fixture = {"job": None, "readable": False, "calls": []}
+    fixture = {"job": None, "readable": False, "calls": [], "accounts": [],
+               "open_error": False, "account_label": None, "bodies": []}
     readable_path = str(Path(snapshot["path"]).with_name("readable-synthetic.zip"))
 
     def status_response(route):
@@ -1215,6 +1216,9 @@ def check_backup_reading_entry(page, snapshot: dict, checks: list) -> None:
         payload = response.json()
         if fixture["job"]:
             payload["job"] = fixture["job"]
+        if fixture["account_label"]:
+            payload["reader_source"] = {"archived": True, "name": "wechat-synthetic.zip",
+                                        "format": "raw", "account_label": fixture["account_label"]}
         for item in payload.get("snapshots", []):
             if item["id"] == snapshot["id"]:
                 if fixture["readable"]:
@@ -1226,21 +1230,40 @@ def check_backup_reading_entry(page, snapshot: dict, checks: list) -> None:
 
     def start_open(route):
         path = urlsplit(route.request.url).path
+        body = route.request.post_data_json
         fixture["calls"].append(path)
+        fixture["bodies"].append(body)
         assert route.request.headers.get("authorization", "").startswith("Bearer ")
+        if fixture["accounts"]:
+            assert body["account_id"] in {item["id"] for item in fixture["accounts"]}
+            if fixture["open_error"]:
+                route.fulfill(status=409, json={"error": "Another operation is already running"})
+                return
+            fixture["account_label"] = next(item["label"] for item in fixture["accounts"]
+                                            if item["id"] == body["account_id"])
         if path.endswith("/open"):
-            assert route.request.post_data_json == {}
+            assert body == ({"account_id": body["account_id"]} if fixture["accounts"] else {})
         else:
-            assert route.request.post_data_json in ({"path": snapshot["path"]}, {"path": readable_path})
-        is_readable = route.request.post_data_json.get("path") == readable_path
+            assert body["path"] in {snapshot["path"], readable_path}
+        is_readable = body.get("path") == readable_path
         fixture["job"] = {"id": "synthetic-raw-reader", "type": "reader_open", "status": "running",
                           "progress": {"phase": "readable_open" if is_readable else "raw_extract", "done_files": 1, "total_files": 2,
                                        "done_bytes": 1024, "total_bytes": 2048, "current_file": "正在读取原始备份文件"}}
         route.fulfill(status=202, json={"job_id": fixture["job"]["id"]})
 
+    def archive_info(route):
+        assert route.request.headers.get("authorization", "").startswith("Bearer ")
+        is_readable = route.request.post_data_json.get("path") == readable_path
+        route.fulfill(json={"format": "readable" if is_readable else "raw",
+                            "accounts": len(fixture["accounts"]),
+                            "account_options": [] if is_readable else fixture["accounts"],
+                            "filename": "wechat-<synthetic>.zip"})
+
     page.route("**/api/status", status_response)
     page.route("**/api/snapshots/*/open", start_open)
     page.route("**/api/reader/archive", start_open)
+    page.route("**/api/snapshots/*/open-info", archive_info)
+    page.route("**/api/reader/archive-info", archive_info)
     page.route("**/api/pick-archive", lambda route: route.fulfill(json={"path": snapshot["path"]}))
     try:
         page.evaluate("() => refreshStatus({silent: true})")
@@ -1283,10 +1306,90 @@ def check_backup_reading_entry(page, snapshot: dict, checks: list) -> None:
         assert fixture["calls"] == [f"/api/snapshots/{snapshot['id']}/open", f"/api/snapshots/{snapshot['id']}/open",
                                     "/api/reader/archive", "/api/reader/archive"]
         checks.append("raw_backup_and_whole_readable_library_have_separate_scope_and_open_actions")
+
+        fixture["job"] = None
+        fixture["accounts"] = [
+            {"id": "wxid_synthetic_first", "label": "合成账号一"},
+            {"id": "wxid_synthetic_second", "label": '<img src=x onerror="alert(1)"> 合成账号二'},
+        ]
+        page.evaluate("() => refreshStatus({silent: true})")
+        source_before = page.locator("#reader-source-title").text_content()
+        calls_before = len(fixture["calls"])
+        go_to(page, "archives")
+        page.locator('#all-archives [data-action="snapshot-open"]').click()
+        dialog = page.locator("#reader-account-dialog")
+        expect(dialog).to_be_visible()
+        expect(page.locator("#reader-account-count")).to_have_text("发现 2 个微信账号")
+        expect(page.locator("#reader-account-file")).to_have_text("wechat-<synthetic>.zip")
+        expect(page.locator('#reader-account-options input:checked')).to_have_count(0)
+        expect(page.locator("#reader-account-start")).to_be_disabled()
+        assert len(fixture["calls"]) == calls_before, "Preview unexpectedly started a job"
+        page.keyboard.press("Escape")
+        expect(dialog).to_be_hidden()
+        assert len(fixture["calls"]) == calls_before
+        expect(page.locator("#reader-source-title")).to_have_text(source_before)
+        checks.append("multi_account_snapshot_preview_requires_explicit_choice_and_cancel_keeps_current_reader")
+
+        page.locator('#all-archives [data-action="snapshot-open"]').click()
+        expect(dialog).to_be_visible()
+        expect(page.locator("#reader-account-options img")).to_have_count(0)
+        expect(page.locator(".reader-account-option-text strong").nth(1)).to_have_text(fixture["accounts"][1]["label"])
+        page.locator('#reader-account-options input').nth(1).check()
+        expect(page.locator("#reader-account-start")).to_be_enabled()
+        page.set_viewport_size({"width": 400, "height": 860})
+        assert dialog.evaluate("node => node.scrollWidth <= node.clientWidth")
+        assert dialog.bounding_box()["width"] <= 400
+        page.screenshot(path=str(artifacts / "multi-account-mobile.png"), full_page=True)
+        fixture["job"] = {"id": "synthetic-busy-account-picker", "type": "backup", "status": "running", "progress": {}}
+        page.evaluate("() => refreshStatus({silent: true})")
+        expect(page.locator("#reader-account-start")).to_be_disabled()
+        expect(page.locator("#reader-account-status")).to_contain_text("当前任务正在执行")
+        fixture["job"] = None
+        page.evaluate("() => refreshStatus({silent: true})")
+        fixture["open_error"] = True
+        page.locator("#reader-account-start").click()
+        expect(page.locator("#reader-account-error")).to_contain_text("已有任务正在执行")
+        expect(dialog).to_be_visible()
+        expect(page.locator("#reader-account-start")).to_be_enabled()
+        expect(page.locator('#reader-account-options input').nth(1)).to_be_checked()
+        fixture["open_error"] = False
+        page.locator("#reader-account-start").click()
+        expect(dialog).to_be_hidden()
+        expect(page.locator("#page-reader")).to_be_visible()
+        expect(page.locator("#reader-source-description")).to_contain_text(fixture["accounts"][1]["label"])
+        assert fixture["bodies"][-1] == {"account_id": "wxid_synthetic_second"}
+        checks.append("multi_account_picker_fits_400px_handles_busy_retry_and_treats_labels_as_text")
+
+        fixture["job"] = None
+        page.set_viewport_size({"width": 1440, "height": 1000})
+        page.evaluate("() => refreshStatus({silent: true})")
+        page.locator('[data-action="reader-open"]').click()
+        expect(dialog).to_be_visible()
+        expect(page.locator('#reader-account-options input:checked')).to_have_count(0)
+        page.locator('#reader-account-options input').first.focus()
+        page.keyboard.press("Space")
+        expect(page.locator("#reader-account-start")).to_be_enabled()
+        page.locator("#reader-account-start").focus()
+        page.keyboard.press("Enter")
+        expect(dialog).to_be_hidden()
+        assert fixture["bodies"][-1] == {"path": snapshot["path"], "account_id": "wxid_synthetic_first"}
+        checks.append("multi_account_file_picker_passes_selected_account_and_supports_keyboard_confirmation")
+
+        fixture["job"] = None
+        fixture["accounts"] = fixture["accounts"][:1]
+        page.evaluate("() => refreshStatus({silent: true})")
+        with page.expect_response(lambda response: urlsplit(response.url).path == "/api/reader/archive"):
+            page.locator('[data-action="reader-open"]').click()
+        assert len(fixture["calls"]) == calls_before + 4
+        expect(dialog).to_be_hidden()
+        assert fixture["bodies"][-1] == {"path": snapshot["path"], "account_id": "wxid_synthetic_first"}
+        checks.append("single_account_archive_opens_without_account_prompt")
     finally:
         page.unroute("**/api/status", status_response)
         page.unroute("**/api/snapshots/*/open", start_open)
         page.unroute("**/api/reader/archive", start_open)
+        page.unroute("**/api/snapshots/*/open-info", archive_info)
+        page.unroute("**/api/reader/archive-info", archive_info)
         page.unroute("**/api/pick-archive")
         page.evaluate("() => refreshStatus({silent: true})")
 
@@ -1463,7 +1566,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     assert verification["ok"] is True, "The archive failed content verification."
                     assert verification["checked_files"] == 2, "Verification did not cover both files."
                     checks.append("zip_sha256_verification")
-                    check_backup_reading_entry(page, snapshot, checks)
+                    check_backup_reading_entry(page, snapshot, checks, artifacts)
 
                     go_to(page, "reader")
                     open_management(page)

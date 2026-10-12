@@ -414,19 +414,42 @@ class Application:
             pass
         return None
 
+    @staticmethod
+    def archive_account(body):
+        account_id = body.get("account_id")
+        if account_id is not None and (not isinstance(account_id, str)
+                                       or not re.fullmatch(r"[0-9a-f]{64}", account_id)):
+            raise ValueError("请选择这份备份中的微信账号。")
+        return {"account_id": account_id} if account_id is not None else {}
+
     @serialized_operation
-    def open_reader_archive(self, archive_path, progress=None):
+    def reader_archive_info(self, archive_path):
+        from vault.raw_archive import inspect_archive
+        if not isinstance(archive_path, str) or not Path(archive_path).is_absolute():
+            raise ValueError("请选择本机的拾聊原始备份或可读 ZIP 归档。")
+        info = inspect_archive(archive_path)
+        return {"format": info["format"], "filename": Path(archive_path).name,
+                "accounts": info.get("accounts", 0), "account_options": info.get("account_options", [])}
+
+    @serialized_operation
+    def open_reader_archive(self, archive_path, progress=None, *, account_id=None):
         from vault.raw_archive import inspect_archive, open_raw_archive
         from vault.readable_archive import open_archive
         info = inspect_archive(archive_path)
         if info["format"] == "raw":
             opened = open_raw_archive(archive_path, self.state_dir, progress,
-                                      expected_signature=info["signature"])
+                                      expected_signature=info["signature"],
+                                      **({"account_id": account_id} if account_id is not None else {}))
         else:
+            if account_id is not None:
+                raise ValueError("可读归档无需选择微信账号，请重新打开归档。")
             opened = open_archive(archive_path, self.state_dir)
         with self.job_lock:
             self.archive_library = opened
             self.reader_source = {"archived": True, "name": Path(archive_path).name, "format": info["format"]}
+            selected_account = getattr(opened, "raw_account", None)
+            if selected_account:
+                self.reader_source.update(account_id=selected_account["id"], account_label=selected_account["label"])
             self.reader_generation = secrets.token_hex(16)
         return {**opened.stats(), "format": info["format"],
                 "cache_hit": bool(getattr(opened, "raw_cache_hit", False))}
@@ -488,7 +511,8 @@ class Application:
                 result["reader_error"] = "原始备份已保存，可读压缩归档未能生成，请重试保存可读归档。"
         return result
 
-    def start_job(self, kind, snapshot_id=None, archive_path=None, destination=None, source_id=None, preview_id=None):
+    def start_job(self, kind, snapshot_id=None, archive_path=None, destination=None, source_id=None, preview_id=None,
+                  account_id=None):
         config = self.config()
         export_destination = (self.export_destination(config["destination"] if destination is None else destination, config)
                               if kind == "reader_export" else None)
@@ -535,7 +559,8 @@ class Application:
                     with self.job_lock:
                         self.completed_exports[result["path"]] = signature(Path(result["path"]).lstat())
                 elif kind == "reader_open":
-                    result = self.open_reader_archive(archive_path, progress)
+                    result = self.open_reader_archive(archive_path, progress,
+                                                       **({"account_id": account_id} if account_id is not None else {}))
                 else:
                     result = self.engine.verify(snapshot_id, config["destination"])
                     if not result.get("ok"):
@@ -793,11 +818,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/reader/import":
                 return self.response(self.app.start_job("reader_import", archive_path=body.get("path"),
                                                        preview_id=body.get("preview_id")), 202)
+            if path == "/api/reader/archive-info":
+                return self.response(self.app.reader_archive_info(body.get("path")))
             if path == "/api/reader/archive":
                 archive_path = body.get("path")
                 if not isinstance(archive_path, str) or not Path(archive_path).is_absolute():
                     raise ValueError("请选择本机的拾聊原始备份或可读 ZIP 归档。")
-                return self.response(self.app.start_job("reader_open", archive_path=archive_path), 202)
+                return self.response(self.app.start_job("reader_open", archive_path=archive_path,
+                                                       **self.app.archive_account(body)), 202)
             if path == "/api/reader/live":
                 self.app.use_local_reader()
                 return self.response({"ok": True})
@@ -824,7 +852,7 @@ class Handler(BaseHTTPRequestHandler):
                 if result.returncode:
                     return self.response({"path": None, "cancelled": True})
                 return self.response({"path": result.stdout.strip()})
-            match = re.fullmatch(r"/api/snapshots/([a-zA-Z0-9_.-]+)/(verify|reveal|open)", path)
+            match = re.fullmatch(r"/api/snapshots/([a-zA-Z0-9_.-]+)/(verify|reveal|open|open-info)", path)
             if match:
                 snapshot_id, action = match.groups()
                 if action == "verify":
@@ -832,8 +860,11 @@ class Handler(BaseHTTPRequestHandler):
                 snapshot = next((item for item in self.app.snapshots() if item["id"] == snapshot_id), None)
                 if not snapshot:
                     raise KeyError("Snapshot not found")
+                if action == "open-info":
+                    return self.response(self.app.reader_archive_info(snapshot["path"]))
                 if action == "open":
-                    return self.response(self.app.start_job("reader_open", archive_path=snapshot["path"]), 202)
+                    return self.response(self.app.start_job("reader_open", archive_path=snapshot["path"],
+                                                           **self.app.archive_account(body)), 202)
                 subprocess.run(["/usr/bin/open", "-R", snapshot["path"]], check=True, timeout=15, capture_output=True)
                 return self.response({"ok": True})
             self.response({"error": "Not found"}, 404)

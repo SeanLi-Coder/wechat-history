@@ -5,7 +5,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import sqlite3
 import stat
@@ -82,6 +82,46 @@ class RawArchiveTests(unittest.TestCase):
         result = BackupEngine(self.root / "backup-state").create(
             str(source or self.account), str(self.root / "backups"), allow_running=True)
         return Path(result["path"])
+
+    def multi_account_backup(self, names=("one", "two")):
+        from PIL import Image
+        parent = self.root / "accounts"
+        image_digest = "a" * 32
+        with closing(sqlite3.connect(self.plain["message/message_0.db"])) as db, db:
+            db.execute(f'INSERT INTO "{TABLE}" VALUES(2,102,3,?,1,?)', (STAMP, b"Synthetic image"))
+        def resource(db):
+            db.executescript("CREATE TABLE ChatName2Id(user_name TEXT);"
+                             "CREATE TABLE MessageResourceInfo(message_id INTEGER PRIMARY KEY,chat_id INTEGER,"
+                             "message_local_type INTEGER,message_create_time INTEGER,message_local_id INTEGER,"
+                             "message_svr_id INTEGER,packed_info BLOB);"
+                             "CREATE TABLE MessageResourceDetail(message_id INTEGER,size INTEGER,status INTEGER,packed_info BLOB);")
+            db.execute("INSERT INTO ChatName2Id VALUES(?)", (CHAT,))
+            db.execute("INSERT INTO MessageResourceInfo VALUES(2,1,3,?,2,102,?)", (STAMP, image_digest.encode()))
+        self.make_database("message/message_resource.db", resource)
+        fixtures = {}
+        for index, name in enumerate(names):
+            label = PurePosixPath(name).name
+            image = io.BytesIO()
+            Image.new("RGB", (4, 4), (index * 90, 80, 150)).save(image, format="PNG")
+            with closing(sqlite3.connect(self.plain["message/message_0.db"])) as db, db:
+                db.execute(f'UPDATE "{TABLE}" SET message_content=? WHERE local_id=1',
+                           (f"Synthetic account {label} only".encode(),))
+            with closing(sqlite3.connect(self.plain["message/message_resource.db"])) as db, db:
+                db.execute("DELETE FROM MessageResourceDetail")
+                db.execute("INSERT INTO MessageResourceDetail VALUES(2,?,1,?)", (len(image.getvalue()), b""))
+            account = parent / name
+            keys = {}
+            for relative, plain in self.plain.items():
+                key = hashlib.sha256((name + ":" + relative).encode()).digest()
+                keys[relative] = key.hex()
+                target = account / "db_storage" / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(encrypt_fixture(plain.read_bytes(), key))
+            image_path = account / "msg/attach" / hashlib.md5(CHAT.encode()).hexdigest() / "2026-06/Img" / (image_digest + ".dat")
+            image_path.parent.mkdir(parents=True)
+            image_path.write_bytes(image.getvalue())
+            fixtures[label] = {"account": account, "keys": keys, "image": image.getvalue()}
+        return self.backup(parent), fixtures
 
     def assert_clean(self):
         cache = self.state / "opened-raw-archives"
@@ -292,16 +332,144 @@ class RawArchiveTests(unittest.TestCase):
         nested = self.backup(parent)
         self.assertEqual(open_raw_archive(nested, self.state).stats()["messages"], 1)
 
-    def test_multiple_accounts_are_not_guessed(self):
-        self.keys_ready()
+    def test_multiple_accounts_are_not_guessed_and_options_need_no_keys(self):
         parent = self.root / "accounts"
         for name in ("one", "two"):
             shutil.copytree(self.account, parent / name)
         path = self.backup(parent)
-        self.assertEqual(inspect_archive(path)["accounts"], 2)
+        info = inspect_archive(path)
+        self.assertEqual(info["accounts"], 2)
+        self.assertEqual({item["label"] for item in info["account_options"]}, {"one", "two"})
+        self.assertTrue(all(len(item["id"]) == 64 for item in info["account_options"]))
+        with patch("vault.raw_archive._private_keys") as keys, patch.object(RawArchiveSource, "extract") as extract:
+            with self.assertRaises(RawArchiveError) as error:
+                open_raw_archive(path, self.state)
+            self.assertEqual(error.exception.code, "account_selection_required")
+            keys.assert_not_called()
+            extract.assert_not_called()
+
+    def test_invalid_account_choices_and_choices_from_another_zip_are_rejected(self):
+        path = self.backup()
+        original = inspect_archive(path)
+        modified = self.rewrite(path, lambda _, manifest: manifest.update(source=manifest["source"] + "-changed"))
+        self.assertNotEqual(original["account_options"], inspect_archive(modified)["account_options"])
+        with patch("vault.raw_archive._private_keys") as keys, patch.object(RawArchiveSource, "extract") as extract:
+            for account_id in ("", "0" * 64, [], {}, 1, original["account_options"][0]["id"]):
+                with self.subTest(account_id=account_id):
+                    with self.assertRaises(RawArchiveError) as error:
+                        open_raw_archive(modified, self.state, account_id=account_id)
+                    self.assertEqual(error.exception.code, "invalid_account")
+            keys.assert_not_called()
+            extract.assert_not_called()
+
+    def test_encrypted_accounts_and_media_remain_isolated_with_independent_caches(self):
+        path, fixtures = self.multi_account_backup()
+        options = {item["label"]: item["id"] for item in inspect_archive(path)["account_options"]}
+        original_zip = path.read_bytes()
+        opened = {}
+        for label, fixture in fixtures.items():
+            save_verified_keys(json.dumps({"keys": fixture["keys"]}).encode(), fixture["account"], self.state)
+            library = open_raw_archive(path, self.state, account_id=options[label])
+            opened[label] = library
+            self.assertFalse(library.raw_cache_hit)
+            self.assertEqual(library.stats(), {"messages": 2, "conversations": 1})
+            self.assertEqual(library.search(f"account {label} only")["total"], 1)
+            self.assertEqual(library.search(f"account {'two' if label == 'one' else 'one'} only")["total"], 0)
+            self.assertEqual(library.raw_backup["account_id"], options[label])
+            self.assertEqual(library.raw_backup["account_label"], label)
+            with library.connect() as db:
+                asset = db.execute("SELECT id FROM media_assets WHERE status='ready'").fetchone()
+                self.assertIsNotNone(asset)
+                identities = {row[0] for row in db.execute("SELECT DISTINCT account_key FROM wechat_source_messages")}
+            expected_identity = hashlib.sha256(str(fixture["account"] / "db_storage").encode()).hexdigest()
+            self.assertEqual(identities, {expected_identity})
+            with library.media.open(asset[0]) as (stream, _):
+                self.assertEqual(stream.read(), fixture["image"])
+            if label == "one":
+                with self.assertRaises(RawArchiveError) as error:
+                    open_raw_archive(path, self.state, account_id=options["two"])
+                self.assertEqual(error.exception.code, "keys_mismatch")
+                self.assert_clean()
+        self.assertNotEqual(opened["one"].path, opened["two"].path)
+        (self.state / "wechat-keys.json").unlink()
+        shutil.rmtree(self.root / "accounts")
+        with patch("vault.raw_archive.import_account", side_effect=AssertionError("Cache must not import")):
+            for label, account_id in options.items():
+                cached = open_raw_archive(path, self.state, account_id=account_id)
+                self.assertTrue(cached.raw_cache_hit)
+                self.assertEqual(cached.path, opened[label].path)
+        self.assertEqual(path.read_bytes(), original_zip)
+        self.assert_clean()
+
+    def test_nested_account_roots_import_only_selected_database_and_media(self):
+        path, fixtures = self.multi_account_backup(("one", "one/two"))
+        options = {item["label"]: item["id"] for item in inspect_archive(path)["account_options"]}
+        self.assertEqual(set(options), {"one", "two"})
+        for label, fixture in fixtures.items():
+            save_verified_keys(json.dumps({"keys": fixture["keys"]}).encode(), fixture["account"], self.state)
+            library = open_raw_archive(path, self.state, account_id=options[label])
+            self.assertEqual(library.stats()["messages"], 2)
+            self.assertEqual(library.search(f"account {label} only")["total"], 1)
+            with library.connect() as db:
+                asset = db.execute("SELECT id FROM media_assets WHERE status='ready'").fetchone()
+            self.assertIsNotNone(asset)
+            with library.media.open(asset[0]) as (stream, _):
+                self.assertEqual(stream.read(), fixture["image"])
+        self.assert_clean()
+
+    def test_single_account_v1_cache_is_reused_with_or_without_explicit_selection(self):
+        self.keys_ready()
+        path = self.backup()
+        source = RawArchiveSource(path)
+        expected = hashlib.sha256(json.dumps([1, source.signature, source.manifest_sha256],
+                                            separators=(",", ":")).encode()).hexdigest()
+        first = open_raw_archive(path, self.state)
+        self.assertEqual(first.state_dir.name, expected)
+        receipt_path = first.state_dir / "raw-reader.json"
+        receipt = json.loads(receipt_path.read_bytes())
+        receipt.pop("account_id")
+        receipt.pop("database_path")
+        receipt_path.write_text(json.dumps(receipt))
+        (self.state / "wechat-keys.json").unlink()
+        for selection in (None, inspect_archive(path)["account_options"][0]["id"]):
+            with patch("vault.raw_archive.import_account", side_effect=AssertionError("Cache must not import")):
+                again = open_raw_archive(path, self.state, account_id=selection)
+            self.assertTrue(again.raw_cache_hit)
+            self.assertEqual(again.path, first.path)
+
+    def test_multi_account_receipt_cannot_reuse_a_different_accounts_cache(self):
+        path, fixtures = self.multi_account_backup()
+        options = {item["label"]: item["id"] for item in inspect_archive(path)["account_options"]}
+        fixture = fixtures["one"]
+        save_verified_keys(json.dumps({"keys": fixture["keys"]}).encode(), fixture["account"], self.state)
+        first = open_raw_archive(path, self.state, account_id=options["one"])
+        receipt_path = first.state_dir / "raw-reader.json"
+        receipt = json.loads(receipt_path.read_bytes())
+        receipt["account_id"] = options["two"]
+        receipt_path.write_text(json.dumps(receipt))
+        (self.state / "wechat-keys.json").unlink()
         with self.assertRaises(RawArchiveError) as error:
-            open_raw_archive(path, self.state)
-        self.assertEqual(error.exception.code, "multiple_accounts")
+            open_raw_archive(path, self.state, account_id=options["one"])
+        self.assertEqual(error.exception.code, "keys_required")
+
+    def test_account_directory_case_aliases_are_rejected_before_extraction(self):
+        def aliases(entries, manifest):
+            for item in manifest["files"]:
+                old = "data/" + item["path"]
+                item["path"] = "One/" + item["path"]
+                entry, data = entries.pop(old)
+                entry.filename = "data/" + item["path"]
+                entries[entry.filename] = [entry, data]
+            body = entries["data/One/db_storage/message/message_0.db"][1]
+            name = "one/db_storage/message/message_1.db"
+            entries["data/" + name] = [zipfile.ZipInfo("data/" + name), body]
+            manifest["files"].append({"path": name, "size": len(body), "sha256": hashlib.sha256(body).hexdigest()})
+            manifest["file_count"] += 1
+            manifest["original_bytes"] += len(body)
+        path = self.rewrite(self.backup(), aliases)
+        with self.assertRaises(RawArchiveError) as error:
+            inspect_archive(path)
+        self.assertEqual(error.exception.code, "unsafe_paths")
 
     @unittest.skipUnless(find_tool("ffmpeg") and find_tool("ffprobe"), "Synthetic media requires FFmpeg")
     def test_image_voice_video_avatar_survive_source_removal_and_readable_export(self):

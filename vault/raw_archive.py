@@ -94,11 +94,19 @@ class RawArchiveSource:
             # Refuse collisions on both case-sensitive and default macOS file
             # systems before creating any file or following any path component.
             paths = set()
+            directories = {}
             for item in self.manifest["files"]:
                 name = unicodedata.normalize("NFC", item["path"]).casefold()
                 if name in paths:
                     raise RawArchiveError("unsafe_paths", "备份含有在本机相互冲突的文件名，无法安全解包。")
                 paths.add(name)
+                for parent in PurePosixPath(item["path"]).parents:
+                    if str(parent) == ".":
+                        continue
+                    canonical = unicodedata.normalize("NFC", str(parent)).casefold()
+                    existing = directories.setdefault(canonical, str(parent))
+                    if existing != str(parent):
+                        raise RawArchiveError("unsafe_paths", "备份含有在本机相互冲突的账号或目录名，无法安全解包。")
                 info = archive.getinfo("data/" + item["path"])
                 if stat.S_IFMT(info.external_attr >> 16) not in {0, stat.S_IFREG}:
                     raise RawArchiveError("unsafe_paths", "原始备份只能包含普通文件。")
@@ -106,11 +114,43 @@ class RawArchiveSource:
                 if any(str(parent) in paths for parent in PurePosixPath(name).parents if str(parent) != "."):
                     raise RawArchiveError("unsafe_paths", "备份的文件与目录路径发生冲突。")
         self.database_paths = self._database_paths()
+        self.account_options = []
+        self._accounts = {}
+        for relative in self.database_paths:
+            canonical = unicodedata.normalize("NFC", relative)
+            identity = json.dumps(["shiliao-raw-account-v1", self.manifest_sha256, canonical],
+                                  separators=(",", ":"))
+            account_id = hashlib.sha256(identity.encode()).hexdigest()
+            original = PurePosixPath(self.manifest["source"]) / relative
+            label = original.parent.name or "归档账号"
+            self._accounts[account_id] = relative
+            self.account_options.append({"id": account_id, "label": label})
+        self.account_id = None
+        self.database_path = None
         database_bytes = sum(item["size"] for item in self.manifest["files"]
                              if re.search(r"\.db(?:-wal|-journal)?$", item["path"]))
         self.required_bytes = self.manifest["original_bytes"] * 2 + database_bytes * 3 + 512 * CHUNK
         identity = json.dumps([CACHE_VERSION, self.signature, self.manifest_sha256], separators=(",", ":"))
         self.cache_id = hashlib.sha256(identity.encode()).hexdigest()
+
+    def select_account(self, account_id=None):
+        if not self.database_paths:
+            raise RawArchiveError("missing_databases", "原始备份中没有找到微信 4.x 消息数据库，请选择包含完整账号数据的备份或可读归档。")
+        if account_id is None:
+            if len(self.database_paths) > 1:
+                raise RawArchiveError("account_selection_required", "这个备份包含多个微信账号，请选择要打开的账号。")
+            account_id = self.account_options[0]["id"]
+        if not isinstance(account_id, str) or account_id not in self._accounts:
+            raise RawArchiveError("invalid_account", "所选账号不属于这个备份，请重新选择备份内的账号。")
+        self.account_id = account_id
+        self.database_path = self._accounts[account_id]
+        if len(self.database_paths) > 1:
+            # Preserve v1 single-account cache identities. Multi-account
+            # archives never had usable caches, so their identities can add
+            # an explicit selection without rebuilding existing large caches.
+            identity = json.dumps([CACHE_VERSION, self.signature, self.manifest_sha256, account_id],
+                                  separators=(",", ":"))
+            self.cache_id = hashlib.sha256(identity.encode()).hexdigest()
 
     def _database_paths(self):
         roots = set()
@@ -176,7 +216,8 @@ def inspect_archive(path):
     source = RawArchiveSource(path, expected_signature=expected)
     return {"format": "raw", "signature": source.signature, "raw_id": source.manifest["id"],
             "manifest_sha256": source.manifest_sha256, "required_bytes": source.required_bytes,
-            "accounts": len(source.database_paths), "file_count": source.manifest["file_count"],
+            "accounts": len(source.database_paths), "account_options": source.account_options,
+            "file_count": source.manifest["file_count"],
             "original_bytes": source.manifest["original_bytes"]}
 
 
@@ -205,6 +246,10 @@ def _read_cache(folder, source):
                 or receipt.get("manifest_sha256") != source.manifest_sha256
                 or receipt.get("library_sha256") != _hash_file(library_path)):
             return None
+        if len(source.database_paths) > 1 or "account_id" in receipt or "database_path" in receipt:
+            if (receipt.get("account_id") != source.account_id
+                    or receipt.get("database_path") != source.database_path):
+                return None
         objects, _ = _snapshot_inventory(library_path)
         files = {}
         for item in objects:
@@ -219,7 +264,11 @@ def _read_cache(folder, source):
         result = object.__new__(ArchivedLibrary)
         result.state_dir, result.path = folder, library_path
         result.media = MediaStore(result, read_only=True)
-        result.raw_backup = {"id": source.manifest["id"], "manifest_sha256": source.manifest_sha256}
+        result.raw_backup = {"id": source.manifest["id"], "manifest_sha256": source.manifest_sha256,
+                             "account_id": source.account_id,
+                             "account_label": next(item["label"] for item in source.account_options
+                                                   if item["id"] == source.account_id)}
+        result.raw_account = {"id": source.account_id, "label": result.raw_backup["account_label"]}
         result.raw_cache_hit = True
     except (OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError):
         return None
@@ -261,7 +310,7 @@ def _extraction_root(work, source):
     return work / "snapshot" / name
 
 
-def open_raw_archive(path, state_dir, progress=None, *, expected_signature=None):
+def open_raw_archive(path, state_dir, progress=None, *, expected_signature=None, account_id=None):
     """Convert once and open only this raw snapshot, with independent media.
 
     Requires no running-WeChat check because all input is an immutable ZIP
@@ -269,6 +318,7 @@ def open_raw_archive(path, state_dir, progress=None, *, expected_signature=None)
     decrypted source databases, partial media, or partial conversation library.
     """
     source = RawArchiveSource(path, expected_signature)
+    source.select_account(account_id)
     state_dir = Path(state_dir).expanduser().resolve(strict=True)
     cache_root = state_dir / "opened-raw-archives"
     if cache_root.is_symlink():
@@ -280,10 +330,6 @@ def open_raw_archive(path, state_dir, progress=None, *, expected_signature=None)
         if progress:
             progress({"phase": "raw_ready", "cache_hit": True, "current_file": "已打开原始备份的独立阅读缓存"})
         return result
-    if len(source.database_paths) != 1:
-        message = ("这个备份包含多个微信账号，暂时不能自动选择；请打开单个账号的备份或对应可读归档。"
-                   if source.database_paths else "原始备份中没有找到微信 4.x 消息数据库，请选择单个账号的完整备份或可读归档。")
-        raise RawArchiveError("multiple_accounts" if source.database_paths else "missing_databases", message)
     with tempfile.TemporaryDirectory(prefix=".raw-reader-", dir=cache_root) as temporary:
         work = Path(temporary)
         key_state = work / "private-state"
@@ -294,8 +340,8 @@ def open_raw_archive(path, state_dir, progress=None, *, expected_signature=None)
         extracted = _extraction_root(work, source)
         extracted.mkdir(parents=True, mode=0o700)
         source.extract(extracted, progress)
-        database = extracted / source.database_paths[0]
-        if not source.database_paths[0] and database.name != "db_storage":
+        database = extracted / source.database_path
+        if not source.database_path and database.name != "db_storage":
             raise RawArchiveError("missing_databases", "备份的数据库目录结构不完整，请选择完整账号备份。")
         library = Library(work / "reader")
 
@@ -306,7 +352,7 @@ def open_raw_archive(path, state_dir, progress=None, *, expected_signature=None)
                 safe.update(phase="raw_import", current_file="正在从原始备份整理聊天和媒体，微信可以继续使用")
                 progress(safe)
 
-        identity = str(PurePosixPath(source.manifest["source"]) / source.database_paths[0])
+        identity = str(PurePosixPath(source.manifest["source"]) / source.database_path)
         from vault.wechat_crypto import WeChatCryptoError
         try:
             import_account(database, key_state, library, assert_closed=source.check, progress=report,
@@ -317,7 +363,8 @@ def open_raw_archive(path, state_dir, progress=None, *, expected_signature=None)
             raise
         source.check()
         receipt = {"version": CACHE_VERSION, "cache_id": source.cache_id,
-                   "manifest_sha256": source.manifest_sha256, "library_sha256": _hash_file(library.path)}
+                   "manifest_sha256": source.manifest_sha256, "library_sha256": _hash_file(library.path),
+                   "account_id": source.account_id, "database_path": source.database_path}
         receipt_path = library.state_dir / "raw-reader.json"
         with receipt_path.open("x", encoding="utf-8") as out:
             os.fchmod(out.fileno(), 0o600)

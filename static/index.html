@@ -114,6 +114,17 @@
     </main>
   </div>
   <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="false"></div>
+  <dialog id="reader-account-dialog" class="manifest-dialog export-dialog reader-account-dialog" aria-labelledby="reader-account-title" aria-describedby="reader-account-status">
+    <div class="dialog-heading"><div><p class="eyebrow">CHOOSE A WECHAT ACCOUNT</p><h2 id="reader-account-title">选择要阅读的微信账号</h2></div><button type="button" class="icon-button" data-action="reader-account-close" aria-label="关闭账号选择"><span class="icon" data-icon="close"></span></button></div>
+    <p class="export-source-label">微信原始备份</p><p id="reader-account-file" class="export-source"></p>
+    <form id="reader-account-form">
+      <fieldset class="reader-account-fieldset"><legend id="reader-account-count">请选择一个账号</legend><div id="reader-account-options" class="reader-account-options"></div></fieldset>
+      <p id="reader-account-status" class="export-scope-note" role="status"></p>
+      <p class="field-help">首次打开需要对应账号的本地数据库密钥；跨电脑可使用可读归档。</p>
+      <p id="reader-account-error" class="export-error" role="alert" hidden></p>
+      <div class="export-actions"><button type="button" class="text-button" data-action="reader-account-close">取消</button><button type="submit" id="reader-account-start" class="button button-dark" disabled>打开所选账号</button></div>
+    </form>
+  </dialog>
   <dialog id="reader-import-dialog" class="manifest-dialog export-dialog import-dialog" aria-labelledby="import-title" aria-describedby="import-scope-note">
     <div class="dialog-heading"><div><p class="eyebrow">BRING YOUR CONVERSATIONS HOME</p><h2 id="import-title">导入聊天记录</h2></div><button type="button" class="icon-button" data-action="import-close" aria-label="关闭导入窗口"><span class="icon" data-icon="close"></span></button></div>
     <p id="import-scope-note" class="export-scope-note">合并到本机记录，保留已有内容，跳过重复消息。导入完成后自动返回本机查看。</p>
