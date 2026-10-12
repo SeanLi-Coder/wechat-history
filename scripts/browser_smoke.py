@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -70,6 +71,157 @@ def open_management(page):
     if not management.evaluate("node => node.open"):
         management.locator("summary").click()
     return management
+
+
+def seed_synthetic_avatars(library, work: Path, conversation_id, message_ids) -> dict:
+    """Use distinct generated PNGs and explicit identities, never display names."""
+    urls = {}
+    identities = {}
+    for name, color in (("conversation", (72, 148, 98)), ("sender", (190, 115, 71))):
+        def chunk(kind, content):
+            return (struct.pack(">I", len(content)) + kind + content
+                    + struct.pack(">I", zlib.crc32(kind + content) & 0xffffffff))
+
+        pixels = b"".join(b"\0" + bytes(color) * 32 for _ in range(32))
+        body = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b""))
+        source = work / ("synthetic-avatar-" + name + ".png")
+        source.write_bytes(body)
+        asset_id = library.media.store_file(source, "image", "image/png", filename=source.name)
+        identity = hashlib.sha256(("synthetic-account:" + name).encode()).hexdigest()
+        library.set_avatar(identity, asset_id)
+        identities[name] = identity
+        urls[name] = "/api/media/" + asset_id
+    with library.connect() as connection:
+        connection.execute("INSERT INTO conversation_avatars(conversation_id,identity_key) VALUES(?,?)",
+                           (conversation_id, identities["conversation"]))
+        connection.executemany("INSERT INTO message_avatars(message_id,identity_key) VALUES(?,?)",
+                               [(message_id, identities["sender"]) for message_id in set(message_ids)])
+    return urls
+
+
+def expect_avatar(avatar, url):
+    image = avatar.locator("img.avatar-image")
+    expect(image).to_have_count(1)
+    expect(image).to_have_attribute("src", url)
+    expect(image).to_have_attribute("loading", "lazy")
+    expect(image).to_have_attribute("decoding", "async")
+    image.scroll_into_view_if_needed()
+    expect(avatar).to_have_class(re.compile(r"\bhas-avatar\b"))
+    assert image.evaluate("image => image.naturalWidth === 32 && getComputedStyle(image).objectFit === 'cover'")
+    expect(avatar.locator(".avatar-fallback")).to_be_hidden()
+
+
+def check_avatar_fallbacks(page, conversation_id, message_count, checks):
+    """Reject untrusted URLs and handle failed or absent avatars in real UI flows."""
+    mode = {"value": "legacy"}
+    broken = "/api/media/" + "e" * 64
+    conversation_routes = re.compile(r"/api/conversations(?:\?|/|$)")
+    requests = []
+
+    def record_request(request):
+        if "/api/media/" in request.url or urlsplit(request.url).hostname == "avatar.invalid":
+            requests.append(request.url)
+
+    def avatar_response(route):
+        response = route.fetch()
+        payload = response.json()
+        items = payload.get("conversations", []) + payload.get("messages", [])
+        if "conversation" in payload:
+            items.append(payload["conversation"])
+        for item in items:
+            if mode["value"] == "legacy":
+                item.pop("avatar_url", None)
+            else:
+                item["avatar_url"] = mode["value"]
+        route.fulfill(response=response, json=payload)
+
+    def broken_response(route):
+        route.fulfill(status=200, content_type="image/png", body=b"synthetic invalid image")
+
+    def refresh():
+        with page.expect_response(lambda response: urlsplit(response.url).path == "/api/conversations"):
+            page.locator("#conversation-search").press("Escape")
+        button = page.locator(f'[data-action="select-conversation"][data-id="{conversation_id}"]')
+        with page.expect_response(lambda response: urlsplit(response.url).path.endswith("/messages")):
+            button.click()
+        expect(page.locator(".message-item")).to_have_count(message_count)
+        return button
+
+    page.on("request", record_request)
+    page.route(conversation_routes, avatar_response)
+    page.route("**" + broken, broken_response)
+    try:
+        button = refresh()
+        expect(button.locator(".avatar-image")).to_have_count(0)
+        expect(page.locator("#conversation-header-avatar .avatar-fallback")).to_be_visible()
+        expect(page.locator(".message-avatar .avatar-image")).to_have_count(0)
+        checks.append("old_responses_without_avatar_fields_keep_text_avatars")
+
+        mode["value"] = broken
+        button = refresh()
+        expect(button.locator(".avatar-fallback")).to_be_visible()
+        expect(button.locator(".avatar-image")).to_have_count(0)
+        expect(page.locator("#conversation-header-avatar .avatar-image")).to_have_count(0)
+        expect(page.locator(".message-avatar").first.locator(".avatar-image")).to_have_count(0)
+        assert any(urlsplit(url).path == broken for url in requests), "The broken image fallback was not exercised"
+        checks.append("avatar_decode_failure_restores_text_without_broken_image")
+
+        unsafe_urls = ["https://avatar.invalid/image.png", "//avatar.invalid/image.png",
+                       "data:image/png;base64,AA==", "javascript:window.avatarXss=true",
+                       broken + "?token=forbidden", broken + "#fragment", broken + "\n",
+                       "/api/media/not-a-sha256", "/api/media/../status"]
+        for url in unsafe_urls:
+            mode["value"] = url
+            before = len(requests)
+            button = refresh()
+            expect(button.locator(".avatar-image")).to_have_count(0)
+            expect(page.locator("#conversation-header-avatar .avatar-image")).to_have_count(0)
+            expect(page.locator(".message-avatar .avatar-image")).to_have_count(0)
+            assert len(requests) == before, "An unsafe avatar URL triggered a request"
+        assert not page.evaluate("Boolean(window.avatarXss)")
+        checks.append("avatar_urls_reject_remote_data_script_query_fragment_and_invalid_paths")
+    finally:
+        page.unroute(conversation_routes, avatar_response)
+        page.unroute("**" + broken, broken_response)
+        page.remove_listener("request", record_request)
+    refresh()
+
+
+def check_synthetic_avatars(page, work, state, checks):
+    sys.path.insert(0, str(PROJECT))
+    from vault.library import Library
+
+    library = Library(state)
+    conversation = next(item for item in library.conversations()["conversations"] if "周末计划" in item["title"])
+    rows = library.messages(conversation["id"])["messages"]
+    message_id = next(message["id"] for message in rows if message["text"].startswith("周末一起去公园"))
+    avatars = seed_synthetic_avatars(library, work, conversation["id"], [message_id])
+    with page.expect_response(lambda response: urlsplit(response.url).path == "/api/conversations"):
+        page.locator("#conversation-search").press("Escape")
+    button = page.locator(f'[data-action="select-conversation"][data-id="{conversation["id"]}"]')
+    expect_avatar(button.locator(".conversation-avatar"), avatars["conversation"])
+    button.click()
+    expect(page.locator(".message-item")).to_have_count(3)
+    expect_avatar(page.locator("#conversation-header-avatar"), avatars["conversation"])
+    expect_avatar(page.locator(f'.message-item[data-message-id="{message_id}"] .message-avatar'), avatars["sender"])
+    expect(page.locator(".message-item.self .avatar-image")).to_have_count(0)
+    expect(page.locator(".message-item").first.locator(".avatar-image")).to_have_count(0)
+    checks.append("list_heading_and_message_avatars_use_explicit_identities_only")
+
+    with page.expect_response(lambda response: urlsplit(response.url).path == "/api/search"
+                              and parse_qs(urlsplit(response.url).query).get("q") == ["公园"]):
+        page.locator("#conversation-search").fill("公园")
+    expect(page.locator("#global-search-status")).to_have_attribute("data-query", "公园")
+    result = page.locator(f'[data-action="open-search-message"][data-id="{message_id}"]')
+    expect_avatar(result.locator(".search-result-avatar"), avatars["sender"])
+    result.click()
+    expect(page.locator(".message-item.is-target")).to_have_attribute("data-message-id", str(message_id))
+    expect_avatar(page.locator(".message-item.is-target .message-avatar"), avatars["sender"])
+    expect_avatar(page.locator("#conversation-header-avatar"), avatars["conversation"])
+    checks.append("global_search_and_context_keep_distinct_conversation_and_sender_avatars")
+    check_avatar_fallbacks(page, conversation["id"], 3, checks)
+    return avatars
 
 
 def synthetic_media(work: Path) -> dict:
@@ -214,7 +366,7 @@ def check_synthetic_media(page, work: Path, state: Path, checks: list) -> None:
     page.locator("#messages-scroll").evaluate("element => { element.scrollTop = 0; }")
 
 
-def check_readable_archive(page, work: Path, state: Path, job_finished, checks: list) -> None:
+def check_readable_archive(page, work: Path, state: Path, job_finished, checks: list, avatars: dict) -> None:
     """Prove a saved ZIP can play media after every original fixture is deleted."""
     page.unroute("**/api/conversations/*/messages?*")
     clear_toasts(page)
@@ -225,13 +377,14 @@ def check_readable_archive(page, work: Path, state: Path, job_finished, checks: 
     result = job_finished("reader_export")
     archive = Path(result["path"])
     assert archive.is_relative_to(work) and archive.is_file(), "The readable ZIP was not saved to the test directory."
-    assert result["objects"] == 3, "The readable ZIP did not include all three media objects."
+    assert result["objects"] == 5, "The readable ZIP did not include all three media objects and both avatars."
     expect(page.locator('[data-action="reader-open"]')).to_be_enabled()
 
     for folder in (state / "media/objects", state / "media/cache"):
         assert folder.is_relative_to(work)
         shutil.rmtree(folder)
-    for name in ("smoke-image", "smoke-audio", "smoke-video", "synthetic-video.mp4"):
+    for name in ("smoke-image", "smoke-audio", "smoke-video", "synthetic-video.mp4",
+                 "synthetic-avatar-conversation.png", "synthetic-avatar-sender.png"):
         (work / name).unlink()
     session = page.context.new_cdp_session(page)
     session.send("Network.clearBrowserCache")
@@ -251,6 +404,8 @@ def check_readable_archive(page, work: Path, state: Path, job_finished, checks: 
     expect(page.locator('[data-action="reader-export"]')).to_be_hidden()
     page.locator('[data-action="select-conversation"]').filter(has_text="周末计划").click()
     expect(page.locator(".media-card")).to_have_count(3)
+    expect_avatar(page.locator("#conversation-header-avatar"), avatars["conversation"])
+    expect_avatar(page.locator(".message-avatar:has(.avatar-image)"), avatars["sender"])
     page.locator(".message-image").scroll_into_view_if_needed()
     wait_until(lambda: page.locator(".message-image").evaluate("node => node.naturalWidth === 960"), "archived image decoding")
     for kind in ("audio", "video"):
@@ -259,6 +414,7 @@ def check_readable_archive(page, work: Path, state: Path, job_finished, checks: 
     assert not (state / "media/objects").exists(), "Opening the ZIP unexpectedly restored the original media store."
     assert list((state / "opened-archives").glob("*/media/objects/*/*")), "The readable archive did not lazily extract media."
     checks.append("readable_zip_plays_media_after_original_source_and_store_removal")
+    checks.append("readable_zip_shows_avatars_after_original_source_and_store_removal")
     page.locator("#messages-scroll").evaluate("element => { element.scrollTop = 0; }")
     clear_toasts(page)
 
@@ -542,6 +698,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     page.locator("#conversation-search").fill("")
                     expect(page.locator('[data-action="select-conversation"]')).to_have_count(3)
                     checks.append("conversation_and_message_search")
+                    avatars = check_synthetic_avatars(page, work, state, checks)
                     clear_toasts(page)
                     reader_screenshot = artifacts / "reader.png"
                     page.screenshot(path=str(reader_screenshot), full_page=True)
@@ -559,7 +716,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     media_screenshot = artifacts / "media.png"
                     page.screenshot(path=str(media_screenshot), full_page=True)
                     screenshots.append(str(media_screenshot))
-                    check_readable_archive(page, work, state, job_finished, checks)
+                    check_readable_archive(page, work, state, job_finished, checks, avatars)
 
                     page.set_viewport_size({"width": 400, "height": 900})
                     mobile_widths = [check_mobile_width(page, name)

@@ -110,6 +110,12 @@ def import_account(source, state_dir, library, assert_closed, progress=None):
     contact = root / "contact/contact.db"
     if contact.is_file():
         selected.insert(0, contact)
+    avatar_path = root / "head_image/head_image.db"
+    avatar_available = avatar_path.is_file() and "head_image/head_image.db" in keys
+    if avatar_available:
+        if avatar_path.parent.is_symlink() or avatar_path.is_symlink():
+            raise ValueError("头像数据库必须是账号目录内的普通文件。")
+        selected.append(avatar_path)
     if not _message_databases(root):
         raise ValueError("未找到微信消息数据库。")
     for path in selected:
@@ -163,6 +169,9 @@ def import_account(source, state_dir, library, assert_closed, progress=None):
             progress({"done_files": len(selected), "total_files": len(selected), "snapshot_ready": True,
                       "current_file": "聊天快照已完成，可以重新打开微信；媒体仍在整理，请暂勿清理微信文件。"})
         result = import_decrypted(decrypted_root, library, account_id=str(root), progress=progress)
+        if avatar_available:
+            from vault.wechat_avatars import import_avatars
+            result["avatars"] = import_avatars(decrypted_root, library, str(root), progress)
         if auxiliary:
             from vault.media_import import import_media
             result["media"] = import_media(decrypted_root, root.parent, library, str(root), progress)

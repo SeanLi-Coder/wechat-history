@@ -20,6 +20,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
+from browser_smoke import check_avatar_fallbacks, expect_avatar, seed_synthetic_avatars
 
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
@@ -63,6 +64,7 @@ def synthetic_server(work):
     ordered = sorted(rows, key=lambda row: (row["timestamp"], row["id"]), reverse=True)
     expected_ids = [row["id"] for row in ordered]
     sender_ids = [row["id"] for row in ordered if row["sender"] == "测试昵称"]
+    avatars = seed_synthetic_avatars(library, work, conversation_id, [target, expected_ids[0], *sender_ids])
     application = app.Application(state)
     application.status = lambda: {
         "app_name": "拾聊", "version": "test", "config": configuration, "sources": [], "snapshots": [],
@@ -81,7 +83,7 @@ def synthetic_server(work):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}", application.token, conversation_id, target, expected_ids, sender_ids
+        yield f"http://127.0.0.1:{server.server_port}", application.token, conversation_id, target, expected_ids, sender_ids, avatars
     finally:
         server.shutdown()
         server.server_close()
@@ -103,7 +105,7 @@ def run(browser_path=None, artifacts=None):
     checks = []
     errors, unexpected = [], []
     with tempfile.TemporaryDirectory(prefix="shiliao-search-smoke-") as temporary:
-        with synthetic_server(Path(temporary)) as (origin, token, conversation_id, target_id, expected_ids, sender_ids):
+        with synthetic_server(Path(temporary)) as (origin, token, conversation_id, target_id, expected_ids, sender_ids, avatars):
             with sync_playwright() as playwright:
                 options = {"headless": True, "args": ["--mute-audio", "--disable-background-networking", "--disable-component-update", "--disable-sync"]}
                 executable = browser_path or (CHROME if CHROME.exists() else None)
@@ -138,6 +140,16 @@ def run(browser_path=None, artifacts=None):
                     page.locator('.nav-item[data-page="reader"]').click()
                     expect(page.locator('[data-action="select-conversation"]')).to_have_count(54)
                     search = page.locator("#conversation-search")
+                    conversation = page.locator(f'[data-action="select-conversation"][data-id="{conversation_id}"]')
+                    expect_avatar(conversation.locator(".conversation-avatar"), avatars["conversation"])
+                    conversation.click()
+                    expect(page.locator(".message-item")).to_have_count(100)
+                    expect_avatar(page.locator("#conversation-header-avatar"), avatars["conversation"])
+                    expect_avatar(page.locator(".message-item").first.locator(".message-avatar"), avatars["sender"])
+                    expect(page.locator(".message-item.self .message-avatar .avatar-image")).to_have_count(1)
+                    expect(page.locator(".message-item").nth(1).locator(".avatar-fallback")).to_be_visible()
+                    checks.append("explicit_identity_avatars_in_list_heading_and_messages_without_sender_guessing")
+                    check_avatar_fallbacks(page, conversation_id, 100, checks)
 
                     def query(value):
                         with page.expect_response(lambda response: urlsplit(response.url).path == "/api/search"
@@ -151,6 +163,7 @@ def run(browser_path=None, artifacts=None):
                     expect(page.locator('[data-action="select-conversation"]')).to_have_count(1)
                     expect(page.locator(".search-match-reason")).to_have_text("会话内发送者匹配 · 查看此会话")
                     expect(page.locator(".search-result-sender mark")).to_have_count(2)
+                    expect_avatar(page.locator(".search-message-result").first.locator(".search-result-avatar"), avatars["sender"])
                     search.press("ArrowDown")
                     expect(page.locator('[data-action="select-conversation"]')).to_be_focused()
                     page.keyboard.press("Enter")
@@ -190,12 +203,16 @@ def run(browser_path=None, artifacts=None):
                     target = page.locator(f'[data-action="open-search-message"][data-id="{target_id}"]')
                     expect(target).to_have_count(1)
                     expect(target.locator("mark")).to_have_text("银河计划")
+                    expect_avatar(target.locator(".search-result-avatar"), avatars["sender"])
                     target.click()
                     expect(page.locator(".message-item.is-target")).to_have_count(1)
                     expect(page.locator(".message-item.is-target .message-text mark")).to_have_text("银河计划")
                     expect(page.locator("#message-context-bar")).to_be_visible()
                     expect(page.locator(".message-item")).to_have_count(100)
                     expect(page.locator(".message-item.is-target")).to_be_focused()
+                    expect_avatar(page.locator("#conversation-header-avatar"), avatars["conversation"])
+                    expect_avatar(page.locator(".message-item.is-target .message-avatar"), avatars["sender"])
+                    checks.append("global_message_search_and_context_use_sender_avatars")
                     window_start = expected_ids.index(rendered_ids(page)[0])
                     assert rendered_ids(page) == expected_ids[window_start:window_start + 100]
                     expect(page.locator(".message-time-divider").first).to_contain_text("2024")

@@ -195,6 +195,37 @@ class WeChatAccessTests(unittest.TestCase):
         self.reader.import_decrypted.assert_called_once()
         self.assert_staging_clean()
 
+    def test_optional_avatar_database_is_staged_and_imported_with_its_saved_key(self):
+        avatar = self.database_root / "head_image/head_image.db"
+        avatar.parent.mkdir()
+        avatar.write_bytes((self.database_root / "message/message_0.db").read_bytes())
+        self.keys["head_image/head_image.db"] = self.keys["message/message_0.db"]
+        self.save_keys()
+        module = ModuleType("vault.wechat_avatars")
+
+        def avatars(root, library, identity, progress):
+            self.assertEqual((root / "head_image/head_image.db").read_bytes(), self.plaintext)
+            self.assertIs(library, self.library)
+            self.assertEqual(identity, str(self.database_root))
+            return {"imported": 2, "status": "done"}
+
+        module.import_avatars = Mock(side_effect=avatars)
+        with patch.dict(sys.modules, {"vault.wechat_avatars": module}):
+            result = import_account(self.account, self.state, self.library, Mock())
+        self.assertEqual(result["avatars"], {"imported": 2, "status": "done"})
+        module.import_avatars.assert_called_once()
+        self.assert_staging_clean()
+
+    def test_optional_avatar_database_without_key_does_not_block_message_import(self):
+        avatar = self.database_root / "head_image/head_image.db"
+        avatar.parent.mkdir()
+        avatar.write_bytes((self.database_root / "message/message_0.db").read_bytes())
+        self.save_keys()
+        result = import_account(self.account, self.state, self.library, Mock())
+        self.assertEqual(result["messages"], 192)
+        self.reader.import_decrypted.assert_called_once()
+        self.assert_staging_clean()
+
     def test_existing_wal_changed_after_export_aborts_import(self):
         self.save_keys()
         wal = self.database_root / "contact/contact.db-wal"

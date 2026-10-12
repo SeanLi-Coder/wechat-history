@@ -153,6 +153,9 @@ class Library:
                     sender TEXT NOT NULL, text TEXT NOT NULL, timestamp TEXT NOT NULL, is_self INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id, timestamp, id);
+                CREATE TABLE IF NOT EXISTS avatar_assets (identity_key TEXT PRIMARY KEY, asset_id TEXT);
+                CREATE TABLE IF NOT EXISTS conversation_avatars (conversation_id TEXT PRIMARY KEY, identity_key TEXT);
+                CREATE TABLE IF NOT EXISTS message_avatars (message_id INTEGER PRIMARY KEY, identity_key TEXT);
             """)
         self.path.chmod(0o600)
         from vault.media_store import MediaStore
@@ -172,6 +175,70 @@ class Library:
         with self.connect() as db:
             return {table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                     for table in ("conversations", "messages")}
+
+    @staticmethod
+    def _valid_avatar_asset(row):
+        from vault.media_store import MAX_OBJECT, MIMES
+        return (row is not None and row["kind"] == "image" and row["status"] == "ready"
+                and row["mime_type"] in MIMES["image"]
+                and isinstance(row["id"], str) and re.fullmatch(r"[a-f0-9]{64}", row["id"]) is not None
+                and isinstance(row["object_hash"], str)
+                and re.fullmatch(r"[a-f0-9]{64}", row["object_hash"]) is not None
+                and row["encoding"] in {"raw", "gzip"}
+                and type(row["byte_size"]) is int and 0 < row["byte_size"] <= MAX_OBJECT
+                and type(row["stored_size"]) is int and 0 < row["stored_size"] <= MAX_OBJECT)
+
+    def set_avatar(self, identity_key, asset_id):
+        """Bind a hashed account/user identity to a committed, verified image.
+
+        Store the image with MediaStore before calling this method. Importers
+        may upsert conversation/message identity mappings in their own batch.
+        """
+        if self.media.read_only:
+            raise ValueError("An opened archive is read-only")
+        if any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value)
+               for value in (identity_key, asset_id)):
+            raise ValueError("Avatar identity and asset ID must be lowercase SHA-256 hashes")
+        try:
+            with self.media.open(asset_id) as (_, verified):
+                if not self._valid_avatar_asset(verified):
+                    raise ValueError("Avatar must reference a ready image")
+        except KeyError:
+            raise ValueError("Avatar must reference an available image") from None
+        with self.connect() as db:
+            current = db.execute("SELECT * FROM media_assets WHERE id=?", (asset_id,)).fetchone()
+            if not self._valid_avatar_asset(current) or dict(current) != verified:
+                raise ValueError("Avatar image changed while being verified")
+            db.execute("""INSERT INTO avatar_assets(identity_key,asset_id) VALUES(?,?)
+                ON CONFLICT(identity_key) DO UPDATE SET asset_id=excluded.asset_id""", (identity_key, asset_id))
+
+    def _attach_avatars(self, db, items, kind):
+        """Add local URLs in bounded queries; old immutable archives need no migration."""
+        for item in items:
+            item["avatar_url"] = None
+        if not items:
+            return
+        mapping, column = {"conversation": ("conversation_avatars", "conversation_id"),
+                           "message": ("message_avatars", "message_id")}[kind]
+        tables = {row[0] for row in db.execute("""SELECT name FROM sqlite_master WHERE type='table'
+            AND name IN ('avatar_assets','conversation_avatars','message_avatars')""")}
+        if len(tables) != 3:
+            return
+        urls = {}
+        ids = list(dict.fromkeys(item["id"] for item in items))
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = db.execute(f"""SELECT m.{column} AS target_id,m.identity_key,a.*
+                FROM {mapping} m JOIN avatar_assets v ON v.identity_key=m.identity_key
+                JOIN media_assets a ON a.id=v.asset_id WHERE m.{column} IN ({placeholders})""", chunk)
+            for row in rows:
+                if (isinstance(row["identity_key"], str)
+                        and re.fullmatch(r"[a-f0-9]{64}", row["identity_key"])
+                        and self._valid_avatar_asset(row)):
+                    urls[row["target_id"]] = "/api/media/" + row["id"]
+        for item in items:
+            item["avatar_url"] = urls.get(item["id"])
 
     def import_file(self, data, filename):
         digest = hashlib.sha256(data).hexdigest()
@@ -247,6 +314,7 @@ class Library:
             item = dict(row)
             item.pop("matching_total")
             result.append(item)
+        self._attach_avatars(db, result, "conversation")
         return result, total
 
     def conversations(self, query=""):
@@ -288,6 +356,7 @@ class Library:
                     JOIN messages m ON m.id=page.id JOIN conversations c ON c.id=m.conversation_id
                     ORDER BY m.timestamp DESC,m.id DESC""", (pattern, pattern, limit, offset)).fetchall()
                 result["messages"] = [{**dict(row), "is_self": bool(row["is_self"])} for row in rows]
+                self._attach_avatars(db, result["messages"], "message")
         result["has_more"] = offset + len(result["messages"]) < result["total"]
         return result
 
@@ -305,8 +374,11 @@ class Library:
             rows = db.execute("SELECT id,sender,text,timestamp,is_self FROM messages WHERE " + clause +
                               " ORDER BY timestamp DESC,id DESC LIMIT ? OFFSET ?", (*params, limit, offset)).fetchall()
             media = self.media.for_messages([row["id"] for row in rows])
-            return {"messages": [{**dict(row), "is_self": bool(row["is_self"]), "media": media.get(row["id"], [])} for row in rows],
-                    "total": total, "conversation": dict(conversation)}
+            messages = [{**dict(row), "is_self": bool(row["is_self"]), "media": media.get(row["id"], [])} for row in rows]
+            conversation = dict(conversation)
+            self._attach_avatars(db, messages, "message")
+            self._attach_avatars(db, [conversation], "conversation")
+            return {"messages": messages, "total": total, "conversation": conversation}
 
     def context(self, conversation_id, message_id, limit=100):
         """Return an indexed newest-first window containing one exact message.
@@ -330,9 +402,14 @@ class Library:
             rows = db.execute("""SELECT id,sender,text,timestamp,is_self FROM messages
                 WHERE conversation_id=? ORDER BY timestamp DESC,id DESC LIMIT ? OFFSET ?""",
                 (conversation_id, limit, offset)).fetchall()
+            conversation = dict(conversation)
+            messages = [{**dict(row), "is_self": bool(row["is_self"])} for row in rows]
+            self._attach_avatars(db, messages, "message")
+            self._attach_avatars(db, [conversation], "conversation")
         media = self.media.for_messages([row["id"] for row in rows])
-        messages = [{**dict(row), "is_self": bool(row["is_self"]), "media": media.get(row["id"], [])} for row in rows]
-        return {"conversation": dict(conversation), "messages": messages, "target_message_id": message_id,
+        for message in messages:
+            message["media"] = media.get(message["id"], [])
+        return {"conversation": conversation, "messages": messages, "target_message_id": message_id,
                 "total": total, "offset": offset, "limit": limit,
                 "has_before": offset > 0, "has_after": offset + len(messages) < total}
 

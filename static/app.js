@@ -129,6 +129,32 @@ function avatarText(value) {
   return Array.from(String(value || "聊").trim()).slice(0, 2).join("") || "聊";
 }
 
+function setAvatar(node, label, url) {
+  node.classList.remove("has-avatar");
+  node.setAttribute("aria-hidden", "true");
+  node.replaceChildren(element("span", "avatar-fallback", avatarText(label)));
+  if (typeof url !== "string" || url.length !== 75 || !/^\/api\/media\/[a-f0-9]{64}$/.test(url)) return node;
+  const image = element("img", "avatar-image");
+  image.alt = "";
+  image.loading = "lazy";
+  image.decoding = "async";
+  image.addEventListener("load", () => {
+    if (image.parentNode === node) node.classList.add("has-avatar");
+  }, { once: true });
+  image.addEventListener("error", () => {
+    if (image.parentNode !== node) return;
+    image.remove();
+    node.classList.remove("has-avatar");
+  }, { once: true });
+  image.src = url;
+  node.append(image);
+  return node;
+}
+
+function createAvatar(tag, className, label, url) {
+  return setAvatar(element(tag, `${className} ${avatarTone(label)}`), label, url);
+}
+
 function highlighted(tag, className, value, query) {
   const node = element(tag, className);
   const text = String(value ?? "");
@@ -739,8 +765,7 @@ function conversationButton(conversation, query = "") {
   button.dataset.id = conversation.id;
   button.setAttribute("aria-pressed", String(state.conversationId === String(conversation.id)));
   const title = conversation.title || "未命名会话";
-  const avatar = element("span", `conversation-avatar ${avatarTone(title)}`, avatarText(title));
-  avatar.setAttribute("aria-hidden", "true");
+  const avatar = createAvatar("span", "conversation-avatar", title, conversation.avatar_url);
   const summary = element("span", "conversation-summary");
   const heading = element("span", "conversation-line");
   const timestamp = element("time", "", conversationTime(conversation.last_message_at));
@@ -792,9 +817,13 @@ function renderGlobalSearch(preserveScroll = false) {
       button.dataset.conversationId = String(message.conversation_id);
       const heading = element("span", "search-result-heading");
       heading.append(highlighted("strong", "", message.conversation_title || "未命名会话", search.query), element("time", "", conversationTime(message.timestamp)));
-      const sender = highlighted("span", "search-result-sender", message.sender || (message.is_self ? "我" : "对方"), search.query);
+      const senderName = message.sender || (message.is_self ? "我" : "对方");
+      const avatar = createAvatar("span", "conversation-avatar search-result-avatar", senderName, message.avatar_url);
+      const content = element("span", "search-result-content");
+      const sender = highlighted("span", "search-result-sender", senderName, search.query);
       const preview = highlighted("span", "search-result-preview", searchSnippet(message.text, search.query), search.query);
-      button.append(heading, sender, preview);
+      content.append(heading, sender, preview);
+      button.append(avatar, content);
       if (state.messageContext?.targetId === String(message.id) && state.conversationId === String(message.conversation_id)) {
         button.classList.add("selected");
         button.setAttribute("aria-current", "true");
@@ -885,8 +914,8 @@ function prepareConversation(id) {
   $("messages-header").hidden = false;
   $("conversation-title").textContent = selected?.title || "聊天记录";
   $("conversation-meta").textContent = "正在读取…";
-  $("conversation-header-avatar").textContent = avatarText(selected?.title);
   $("conversation-header-avatar").className = `conversation-avatar header-avatar ${avatarTone(selected?.title || "")}`;
+  setAvatar($("conversation-header-avatar"), selected?.title, selected?.avatar_url);
 }
 
 async function selectConversation(id) {
@@ -929,8 +958,8 @@ async function openSearchMessage(conversationId, messageId, button) {
 function setConversationHeading(conversation) {
   $("messages-header").hidden = false;
   $("conversation-title").textContent = conversation.title || "未命名会话";
-  $("conversation-header-avatar").textContent = avatarText(conversation.title);
   $("conversation-header-avatar").className = `conversation-avatar header-avatar ${avatarTone(conversation.title || "")}`;
+  setAvatar($("conversation-header-avatar"), conversation.title, conversation.avatar_url);
   const query = $("message-search").value.trim();
   $("conversation-meta").textContent = `${query ? "找到 " : ""}${count(state.messagesTotal)} 条消息 · 最新在前${conversation.is_demo ? " · 示例会话" : ""}`;
 }
@@ -1031,8 +1060,7 @@ function renderMessages(append) {
       row.tabIndex = -1;
       row.setAttribute("aria-label", "定位到的消息");
     }
-    const avatar = element("div", `message-avatar ${avatarTone(sender)}`, avatarText(sender));
-    avatar.setAttribute("aria-hidden", "true");
+    const avatar = createAvatar("div", "message-avatar", sender, message.avatar_url);
     const content = element("div", "message-content");
     const meta = element("div", "message-meta");
     const timeLabel = timestamp ? new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(timestamp) : "时间未知";

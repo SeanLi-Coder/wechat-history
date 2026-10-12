@@ -13,6 +13,7 @@ import stat
 from typing import Callable, Iterator
 
 from vault.library import Library, normalize_time
+from vault.wechat_avatars import avatar_identity
 
 
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
@@ -267,10 +268,15 @@ def import_decrypted(root: Path, library: Library, progress: Callable[[dict], No
             for path in message_paths:
                 with _open_source(path) as source:
                     senders: dict[int, str] = {}
+                    sender_identities: dict[int, str] = {}
                     cursor = source.execute("SELECT rowid AS sender_id, user_name FROM Name2Id")
                     while rows := cursor.fetchmany(METADATA_BATCH_SIZE):
                         for row in rows:
-                            senders[_integer(row["sender_id"])] = _metadata_text(row["user_name"])
+                            sender_id = _integer(row["sender_id"])
+                            username = _metadata_text(row["user_name"])
+                            senders[sender_id] = username
+                            if username:
+                                sender_identities[sender_id] = avatar_identity(account_key, username)
                     tables = source.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
                     table_names = [row["name"] for row in tables if row["name"].lower().startswith("msg_")]
                     for table in table_names:
@@ -303,6 +309,13 @@ def import_decrypted(root: Path, library: Library, progress: Callable[[dict], No
                                 ).rowcount
                                 result["conversations"] += inserted
                                 destination.execute("UPDATE conversations SET title=? WHERE id=?", (title, conversation_id))
+                                if chat_username:
+                                    destination.execute("""INSERT INTO conversation_avatars VALUES(?,?)
+                                        ON CONFLICT(conversation_id) DO UPDATE SET identity_key=excluded.identity_key
+                                        WHERE identity_key<>excluded.identity_key""",
+                                        (conversation_id, avatar_identity(account_key, chat_username)))
+                                else:
+                                    destination.execute("DELETE FROM conversation_avatars WHERE conversation_id=?", (conversation_id,))
                                 conversation_ready = True
                             for row in rows:
                                 local_id = str(_integer(row["local_id"]))
@@ -326,6 +339,7 @@ def import_decrypted(root: Path, library: Library, progress: Callable[[dict], No
                                     WHERE account_key=? AND database_name=? AND table_name=? AND local_id=?
                                 """, key).fetchone()
                                 if existing is not None and existing["target_id"] is not None:
+                                    message_id = existing["message_id"]
                                     if existing["source_digest"] != digest:
                                         destination.execute("""
                                             UPDATE messages SET conversation_id=?, sender=?, text=?, timestamp=?, is_self=?
@@ -349,6 +363,13 @@ def import_decrypted(root: Path, library: Library, progress: Callable[[dict], No
                                         DO UPDATE SET message_id=excluded.message_id, source_digest=excluded.source_digest
                                     """, (*key, message_id, digest))
                                     result["messages"] += 1
+                                sender_identity = sender_identities.get(sender_id)
+                                if sender_identity:
+                                    destination.execute("""INSERT INTO message_avatars VALUES(?,?)
+                                        ON CONFLICT(message_id) DO UPDATE SET identity_key=excluded.identity_key
+                                        WHERE identity_key<>excluded.identity_key""", (message_id, sender_identity))
+                                else:
+                                    destination.execute("DELETE FROM message_avatars WHERE message_id=?", (message_id,))
                                 processed_messages += 1
                             report()
                 processed_databases += 1

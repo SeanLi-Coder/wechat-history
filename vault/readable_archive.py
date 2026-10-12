@@ -54,6 +54,19 @@ def _validate_library(path, files):
         for name, columns in required.items():
             if name not in tables or not columns <= {row[1] for row in connection.execute(f'PRAGMA table_info("{name}")')}:
                 raise ValueError("Archived conversation library has an unsupported schema")
+        avatar_tables = {
+            "avatar_assets": {"identity_key": ("TEXT", 1), "asset_id": ("TEXT", 0)},
+            "conversation_avatars": {"conversation_id": ("TEXT", 1), "identity_key": ("TEXT", 0)},
+            "message_avatars": {"message_id": ("INTEGER", 1), "identity_key": ("TEXT", 0)},
+        }
+        if tables & avatar_tables.keys():
+            if not avatar_tables.keys() <= tables:
+                raise ValueError("Archived avatar mappings have an incomplete schema")
+            for name, columns in avatar_tables.items():
+                actual = {row[1]: (row[2].upper(), row[5])
+                          for row in connection.execute(f'PRAGMA table_info("{name}")')}
+                if any(actual.get(column) != specification for column, specification in columns.items()):
+                    raise ValueError("Archived avatar mappings have an unsupported schema")
         if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise ValueError("Archived conversation library is damaged")
         for kind, mime, digest, encoding, byte_size, stored_size in connection.execute(
