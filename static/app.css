@@ -537,9 +537,11 @@ select { appearance: auto; }
 .search-message-result:hover { background: #343e3a; }
 .search-message-result.selected { border-left-color: #74da92; background: #35463b; }
 .search-message-result:focus-visible { outline-offset: -3px; }
-.search-result-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; width: 100%; min-width: 0; }
+.search-result-heading { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; width: 100%; min-width: 0; }
 .search-result-heading strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #dce6df; font-size: 13px; font-weight: 500; }
-.search-result-heading time { flex-shrink: 0; color: #a8b6ac; font-size: 11px; }
+.search-result-heading time { flex-shrink: 0; color: #a8b6ac; font-size: 12px; font-variant-numeric: tabular-nums; }
+.conversation-button.is-search-result .conversation-line { flex-direction: column; align-items: flex-start; gap: 5px; }
+.conversation-button.is-search-result .conversation-line strong { width: 100%; }
 .search-result-sender { color: #b8ccc0; font-size: 12px; overflow-wrap: anywhere; }
 .search-result-preview { display: -webkit-box; width: 100%; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; color: #c6ceca; font-size: 12px; line-height: 1.75; overflow-wrap: anywhere; }
 .search-more { display: flex; max-width: calc(100% - 28px); margin: 15px auto; white-space: normal; font-size: 12px; }
@@ -547,10 +549,30 @@ select { appearance: auto; }
 .message-context-bar .text-button { flex-shrink: 0; font-size: 12px; }
 .message-item.is-target { outline: none; }
 .message-item.is-target .message-bubble { outline: 2px solid #a0e3ab; outline-offset: 4px; box-shadow: 0 0 0 7px #55806328; }
+.date-filter { flex-shrink: 0; color: #c4d0c8; font-size: 12px; }
+.date-filter > summary { display: flex; align-items: center; gap: 5px; min-height: 32px; width: fit-content; padding: 5px 7px; border-radius: 5px; cursor: pointer; list-style: none; }
+.date-filter > summary::-webkit-details-marker { display: none; }
+.date-filter > summary:hover, .date-filter[open] > summary { background: #3a443e; }
+.date-filter > summary .icon { width: 14px; height: 14px; flex-basis: 14px; }
+.date-filter.is-filtered > summary { color: #a5edba; background: #304d39; }
+.global-date-filter { margin: -5px 14px 10px; }
+.date-filter-panel { padding: 10px; border: 1px solid #49554d; border-radius: 7px; background: #2c3330; }
+.date-filter-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.date-filter-fields label { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; }
+.date-filter-fields input { width: 100%; min-width: 0; height: 34px; padding: 5px 6px; border: 1px solid #56635a; border-radius: 5px; background: #232925; color: #edf3ee; color-scheme: dark; font-size: 12px; }
+.date-filter-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 3px 8px; margin-top: 6px; color: #b1c0b5; font-size: 11px; }
+.date-filter-footer .text-button { min-height: 28px; font-size: 12px; }
+.message-date-filter { position: relative; }
+.message-date-filter .date-filter-panel { position: absolute; top: calc(100% + 7px); right: 0; z-index: 10; width: 320px; max-width: calc(100vw - 88px); box-shadow: 0 12px 28px #0006; }
+.message-meta time { font-size: 12px; }
 @media (max-width: 700px) {
   .message-context-bar { align-items: flex-start; flex-direction: column; gap: 3px; padding: 9px 15px; font-size: 12px; }
   .message-context-bar .text-button { min-height: 28px; padding: 0; }
   .search-message-result { padding: 14px 17px; }
   .search-result-heading strong { font-size: 14px; }
   .search-result-heading time { font-size: 12px; }
+  .message-date-filter { order: 0; }
+  .message-date-filter > summary { padding-left: 4px; padding-right: 4px; font-size: 11px; }
+  .message-date-filter > summary .icon { display: none; }
+  .message-search { order: 1; }
 }

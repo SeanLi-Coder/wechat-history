@@ -47,6 +47,8 @@ const state = {
   messagesOffset: 0,
   messageContext: null,
   pendingMessageSearch: null,
+  pendingGlobalSearch: null,
+  messagesFilterKey: "",
   sourceSignature: "",
   lastRunningJob: null,
   completedJobs: new Set(),
@@ -106,19 +108,78 @@ function parseTime(value) {
 function formatDate(value, short = false) {
   const date = parseTime(value);
   if (!date) return value ? String(value) : "时间未知";
-  return new Intl.DateTimeFormat("zh-CN", short
+  return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", ...(short
     ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }
-    : { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+    : { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) }).format(date);
 }
 
 function conversationTime(value) {
   const date = parseTime(value);
   if (!date) return "";
   const today = new Date();
-  const sameDay = date.toDateString() === today.toDateString();
-  return new Intl.DateTimeFormat("zh-CN", sameDay
+  const sameDay = beijingTime(date).slice(0, 10) === beijingTime(today).slice(0, 10);
+  return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", ...(sameDay
     ? { hour: "2-digit", minute: "2-digit", hour12: false }
-    : { ...(date.getFullYear() !== today.getFullYear() ? { year: "2-digit" } : {}), month: "numeric", day: "numeric" }).format(date);
+    : { ...(beijingTime(date).slice(0, 4) !== beijingTime(today).slice(0, 4) ? { year: "2-digit" } : {}), month: "numeric", day: "numeric" }) }).format(date);
+}
+
+function beijingTime(value) {
+  const date = parseTime(value);
+  if (!date) return "时间未知";
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date).map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
+function searchFilters(scope) {
+  return { query: $(scope === "global" ? "conversation-search" : "message-search").value.trim(),
+    dateFrom: $(`${scope}-date-from`).value, dateTo: $(`${scope}-date-to`).value };
+}
+
+function filterKey(filters) {
+  return JSON.stringify([filters.query, filters.dateFrom, filters.dateTo]);
+}
+
+function hasFilters(filters) {
+  return Boolean(filters.query || filters.dateFrom || filters.dateTo);
+}
+
+function searchParameters(filters, offset, limit) {
+  const parameters = new URLSearchParams({ q: filters.query, offset: String(offset), limit: String(limit) });
+  if (filters.dateFrom) parameters.set("date_from", filters.dateFrom);
+  if (filters.dateTo) parameters.set("date_to", filters.dateTo);
+  return parameters.toString();
+}
+
+function validateSearchFilters(filters) {
+  if (filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo) {
+    throw new Error("结束日期不能早于开始日期，请调整日期范围。");
+  }
+}
+
+function updateDateFilter(scope) {
+  const { dateFrom, dateTo } = searchFilters(scope);
+  const active = Boolean(dateFrom || dateTo);
+  $(`${scope}-date-filter`).classList.toggle("is-filtered", active);
+  $(`${scope}-date-label`).textContent = active ? "日期 · 已选" : "日期";
+  $(`${scope}-date-filter`).querySelector('[data-action="clear-dates"]').disabled = !active;
+  $(`${scope}-date-filter`).querySelector("summary").title = active
+    ? `${dateFrom || "不限开始"} 至 ${dateTo || "不限结束"} · 按北京时间` : "按北京时间筛选日期";
+}
+
+function setDateRange(scope, range = {}) {
+  $(`${scope}-date-from`).value = range.dateFrom || "";
+  $(`${scope}-date-to`).value = range.dateTo || "";
+  updateDateFilter(scope);
+}
+
+async function clearMessageSearch() {
+  state.pendingMessageSearch?.cancel();
+  $("message-search").value = "";
+  setDateRange("message");
+  await loadMessages(false);
 }
 
 function avatarTone(value) {
@@ -695,7 +756,7 @@ async function saveSettings(event) {
 }
 
 async function loadConversations() {
-  if ($("conversation-search").value.trim()) return loadGlobalSearch();
+  if (hasFilters(searchFilters("global"))) return loadGlobalSearch();
   const request = ++state.conversationRequest;
   state.globalSearch = null;
   updateGlobalSearchChrome();
@@ -715,21 +776,25 @@ async function loadConversations() {
 }
 
 function updateGlobalSearchChrome() {
-  const query = $("conversation-search").value.trim();
-  $("conversation-pane-title").textContent = query ? "搜索结果" : "会话";
-  document.querySelector('[data-action="clear-global-search"]').hidden = !query;
-  $("global-search-status").hidden = !query;
-  if (!query) {
+  const active = hasFilters(searchFilters("global"));
+  $("conversation-pane-title").textContent = active ? "搜索结果" : "会话";
+  document.querySelector('[data-action="clear-global-search"]').hidden = !active;
+  $("global-search-status").hidden = !active;
+  updateDateFilter("global");
+  if (!active) {
     $("global-search-status").textContent = "";
     delete $("global-search-status").dataset.query;
+    delete $("global-search-status").dataset.filters;
   }
 }
 
 async function loadGlobalSearch(append = false, button = null) {
-  const query = $("conversation-search").value.trim();
-  if (!query) return loadConversations();
+  const filters = searchFilters("global");
+  const { query } = filters;
+  const key = filterKey(filters);
+  if (!hasFilters(filters)) return loadConversations();
   const request = ++state.conversationRequest;
-  const previous = state.globalSearch?.query === query ? state.globalSearch : null;
+  const previous = state.globalSearch?.key === key ? state.globalSearch : null;
   const offset = append && previous ? previous.messages.length : 0;
   updateGlobalSearchChrome();
   if (!append) {
@@ -737,10 +802,11 @@ async function loadGlobalSearch(append = false, button = null) {
     $("conversation-list").replaceChildren(element("div", "loading-placeholder", "正在查找用户、会话和聊天内容…"));
   }
   const task = async () => {
-    const response = await api(`/api/search?q=${encodeURIComponent(query)}&offset=${offset}&limit=50`);
-    if (request !== state.conversationRequest || query !== $("conversation-search").value.trim()) return;
+    validateSearchFilters(filters);
+    const response = await api(`/api/search?${searchParameters(filters, offset, 50)}`);
+    if (request !== state.conversationRequest || key !== filterKey(searchFilters("global"))) return;
     state.globalSearch = {
-      query,
+      ...filters, key,
       conversations: response.conversations || [],
       conversationTotal: Number(response.conversation_total) || (response.conversations || []).length,
       conversationsHasMore: Boolean(response.conversations_has_more),
@@ -758,8 +824,9 @@ async function loadGlobalSearch(append = false, button = null) {
   else { try { await task(); } catch (error) { failed(error); } }
 }
 
-function conversationButton(conversation, query = "") {
+function conversationButton(conversation, query = "", inSearch = false) {
   const button = element("button", `conversation-button${state.conversationId === String(conversation.id) ? " selected" : ""}`);
+  button.classList.toggle("is-search-result", inSearch);
   button.type = "button";
   button.dataset.action = "select-conversation";
   button.dataset.id = conversation.id;
@@ -768,10 +835,10 @@ function conversationButton(conversation, query = "") {
   const avatar = createAvatar("span", "conversation-avatar", title, conversation.avatar_url);
   const summary = element("span", "conversation-summary");
   const heading = element("span", "conversation-line");
-  const timestamp = element("time", "", conversationTime(conversation.last_message_at));
+  const timestamp = element("time", "", inSearch ? beijingTime(conversation.last_message_at) : conversationTime(conversation.last_message_at));
   const date = parseTime(conversation.last_message_at);
   if (date) timestamp.dateTime = date.toISOString();
-  timestamp.title = formatDate(conversation.last_message_at);
+  timestamp.title = `${beijingTime(conversation.last_message_at)} · 北京时间`;
   heading.append(highlighted("strong", "", title, query), timestamp);
   const senderMatch = query && !title.toLocaleLowerCase().includes(query.toLocaleLowerCase());
   summary.append(heading, senderMatch
@@ -782,7 +849,7 @@ function conversationButton(conversation, query = "") {
 }
 
 function renderConversations() {
-  if (state.globalSearch && $("conversation-search").value.trim() === state.globalSearch.query) return renderGlobalSearch(true);
+  if (state.globalSearch?.key === filterKey(searchFilters("global"))) return renderGlobalSearch(true);
   const list = $("conversation-list");
   list.replaceChildren();
   if (!state.conversations.length) list.append(emptyState("chat", "对话，等待被拾起", "导入聊天记录后，会话会显示在这里。"));
@@ -799,12 +866,13 @@ function renderGlobalSearch(preserveScroll = false) {
   list.replaceChildren();
   $("global-search-status").textContent = `${count(search.conversationTotal)} 个用户 / 会话，${count(search.total)} 条聊天记录`;
   $("global-search-status").dataset.query = search.query;
+  $("global-search-status").dataset.filters = search.key;
   if (!search.conversations.length && !search.total) {
-    list.append(emptyState("search", "没有找到匹配结果", "试试用户名、会话名，或聊天里的一句话。", actionButton("清空搜索", "clear-global-search")));
+    list.append(emptyState("search", "没有找到匹配结果", "换一个关键词或日期范围，或清空条件后重试。", actionButton("清空搜索", "clear-global-search")));
   }
   if (search.conversations.length) {
     list.append(element("h3", "search-group-heading", `用户 / 会话 · ${count(search.conversationTotal)}`));
-    search.conversations.forEach(conversation => list.append(conversationButton(conversation, search.query)));
+    search.conversations.forEach(conversation => list.append(conversationButton(conversation, search.query, true)));
     if (search.conversationsHasMore) list.append(element("p", "search-limit-note", `已显示前 ${count(search.conversations.length)} 个，请补充关键词缩小范围。`));
   }
   if (search.total) {
@@ -816,7 +884,11 @@ function renderGlobalSearch(preserveScroll = false) {
       button.dataset.id = String(message.id);
       button.dataset.conversationId = String(message.conversation_id);
       const heading = element("span", "search-result-heading");
-      heading.append(highlighted("strong", "", message.conversation_title || "未命名会话", search.query), element("time", "", conversationTime(message.timestamp)));
+      const timestamp = element("time", "", beijingTime(message.timestamp));
+      const date = parseTime(message.timestamp);
+      if (date) timestamp.dateTime = date.toISOString();
+      timestamp.title = `${beijingTime(message.timestamp)} · 北京时间`;
+      heading.append(highlighted("strong", "", message.conversation_title || "未命名会话", search.query), timestamp);
       const senderName = message.sender || (message.is_self ? "我" : "对方");
       const avatar = createAvatar("span", "conversation-avatar search-result-avatar", senderName, message.avatar_url);
       const content = element("span", "search-result-content");
@@ -837,7 +909,9 @@ function renderGlobalSearch(preserveScroll = false) {
 }
 
 async function clearGlobalSearch() {
+  state.pendingGlobalSearch?.cancel();
   $("conversation-search").value = "";
+  setDateRange("global");
   state.globalSearch = null;
   state.conversationRequest += 1;
   updateGlobalSearchChrome();
@@ -847,6 +921,7 @@ async function clearGlobalSearch() {
 
 async function resetReaderSource() {
   state.pendingMessageSearch?.cancel();
+  state.pendingGlobalSearch?.cancel();
   state.conversationId = null;
   state.conversationLoaded = false;
   state.messages = [];
@@ -857,6 +932,10 @@ async function resetReaderSource() {
   state.messagesRequest += 1;
   $("conversation-search").value = "";
   $("message-search").value = "";
+  setDateRange("global");
+  setDateRange("message");
+  $("global-date-filter").open = false;
+  $("message-date-filter").open = false;
   $("reader-dropzone").classList.remove("has-selection");
   $("reader-management").open = false;
   if ($("media-preview-dialog").open) $("media-preview-dialog").close();
@@ -906,6 +985,8 @@ function prepareConversation(id) {
   state.messageContext = null;
   $("message-context-bar").hidden = true;
   $("message-search").value = "";
+  setDateRange("message");
+  $("message-date-filter").open = false;
   $("reader-dropzone").classList.add("has-selection");
   $("reader-management").open = false;
   $("messages-header").classList.remove("search-open");
@@ -920,6 +1001,7 @@ function prepareConversation(id) {
 
 async function selectConversation(id) {
   prepareConversation(id);
+  setDateRange("message", searchFilters("global"));
   renderConversations();
   await loadMessages(false);
 }
@@ -960,8 +1042,8 @@ function setConversationHeading(conversation) {
   $("conversation-title").textContent = conversation.title || "未命名会话";
   $("conversation-header-avatar").className = `conversation-avatar header-avatar ${avatarTone(conversation.title || "")}`;
   setAvatar($("conversation-header-avatar"), conversation.title, conversation.avatar_url);
-  const query = $("message-search").value.trim();
-  $("conversation-meta").textContent = `${query ? "找到 " : ""}${count(state.messagesTotal)} 条消息 · 最新在前${conversation.is_demo ? " · 示例会话" : ""}`;
+  const filtered = hasFilters(searchFilters("message"));
+  $("conversation-meta").textContent = `${filtered ? "找到 " : ""}${count(state.messagesTotal)} 条消息 · 最新在前${filtered ? " · 北京时间" : ""}${conversation.is_demo ? " · 示例会话" : ""}`;
 }
 
 function returnToConversations() {
@@ -973,19 +1055,17 @@ function toggleMessageSearch() {
   const expanded = $("messages-header").classList.toggle("search-open");
   document.querySelector('[data-action="toggle-message-search"]').setAttribute("aria-expanded", String(expanded));
   if (expanded) $("message-search").focus();
-  else if ($("message-search").value) {
-    state.pendingMessageSearch?.cancel();
-    $("message-search").value = "";
-    loadMessages(false);
-  }
+  else if (hasFilters(searchFilters("message"))) clearMessageSearch();
 }
 
 async function loadMessages(append = false, button = null) {
   if (!state.conversationId) return;
+  const filters = searchFilters("message");
+  const key = filterKey(filters);
+  append = append && (state.messagesFilterKey === key || Boolean(state.messageContext));
   const request = ++state.messagesRequest;
   const id = state.conversationId;
   const offset = append ? state.messagesOffset + state.messages.length : 0;
-  const query = $("message-search").value.trim();
   if (!append) {
     state.messagesOffset = 0;
     state.messageContext = null;
@@ -993,11 +1073,13 @@ async function loadMessages(append = false, button = null) {
     $("message-list").replaceChildren(element("div", "loading-placeholder", "正在翻开这段对话…"));
   }
   const task = async () => {
-    const response = await api(`/api/conversations/${encodeURIComponent(id)}/messages?q=${encodeURIComponent(query)}&offset=${offset}&limit=100`);
-    if (request !== state.messagesRequest || id !== state.conversationId || query !== $("message-search").value.trim()) return;
+    validateSearchFilters(filters);
+    const response = await api(`/api/conversations/${encodeURIComponent(id)}/messages?${searchParameters(filters, offset, 100)}`);
+    if (request !== state.messagesRequest || id !== state.conversationId || key !== filterKey(searchFilters("message"))) return;
     const incoming = response.messages || [];
     state.messages = append ? [...state.messages, ...incoming] : incoming;
     state.messagesTotal = Number(response.total) || 0;
+    state.messagesFilterKey = key;
     const conversation = response.conversation || state.conversations.find((item) => String(item.id) === id) || {};
     setConversationHeading(conversation);
     renderMessages(append);
@@ -1033,21 +1115,23 @@ async function loadNewerMessages(button) {
 function renderMessages(append) {
   const scrollTop = $("messages-scroll").scrollTop;
   const list = $("message-list");
+  list.dataset.filters = filterKey(searchFilters("message"));
   const highlightQuery = $("message-search").value.trim() || state.messageContext?.query || "";
   list.replaceChildren();
   $("message-context-bar").hidden = !state.messageContext;
   if (state.messageContext) {
-    $("message-context-caption").textContent = `搜索结果的前后文 · 最新在前 · 第 ${count(state.messagesOffset + 1)}–${count(state.messagesOffset + state.messages.length)} 条`;
+    $("message-context-caption").textContent = `搜索结果的前后文 · 不受日期限制 · 最新在前 · 第 ${count(state.messagesOffset + 1)}–${count(state.messagesOffset + state.messages.length)} 条`;
     if (state.messagesOffset > 0) list.append(actionButton("加载更新的消息", "load-earlier", "button button-outline message-more"));
   }
   if (!state.messages.length) {
-    list.append(emptyState("search", $("message-search").value ? "没有找到相关消息" : "这段会话还没有消息", $("message-search").value ? "换一个关键词，或者清空搜索查看全部消息。" : "可以继续导入聊天记录文件。"));
+    const filtered = hasFilters(searchFilters("message"));
+    list.append(emptyState("search", filtered ? "没有找到相关消息" : "这段会话还没有消息", filtered ? "换一个关键词或日期范围，或者清空条件查看全部消息。" : "可以继续导入聊天记录文件。"));
   }
   let previousTimestamp = null;
   state.messages.forEach((message) => {
     const timestamp = parseTime(message.timestamp);
-    if (timestamp && (!previousTimestamp || timestamp.toDateString() !== previousTimestamp.toDateString() || Math.abs(timestamp - previousTimestamp) >= 5 * 60 * 1000)) {
-      const divider = element("time", "message-time-divider", formatDate(message.timestamp, timestamp.getFullYear() === new Date().getFullYear()));
+    if (timestamp && (!previousTimestamp || beijingTime(timestamp).slice(0, 10) !== beijingTime(previousTimestamp).slice(0, 10) || Math.abs(timestamp - previousTimestamp) >= 5 * 60 * 1000)) {
+      const divider = element("time", "message-time-divider", formatDate(message.timestamp, beijingTime(timestamp).slice(0, 4) === beijingTime(new Date()).slice(0, 4)));
       divider.dateTime = timestamp.toISOString();
       list.append(divider);
     }
@@ -1063,9 +1147,10 @@ function renderMessages(append) {
     const avatar = createAvatar("div", "message-avatar", sender, message.avatar_url);
     const content = element("div", "message-content");
     const meta = element("div", "message-meta");
-    const timeLabel = timestamp ? new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(timestamp) : "时间未知";
+    const timeLabel = hasFilters(searchFilters("message")) || state.messageContext ? beijingTime(message.timestamp)
+      : timestamp ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(timestamp) : "时间未知";
     meta.append(highlighted("span", "", sender, highlightQuery), element("time", "", timeLabel));
-    meta.lastChild.title = formatDate(message.timestamp);
+    meta.lastChild.title = `${beijingTime(message.timestamp)} · 北京时间`;
     if (timestamp) meta.lastChild.dateTime = timestamp.toISOString();
     const bubble = element("div", "message-bubble");
     bubble.append(highlighted("div", "message-text", message.text || "[非文本消息]", highlightQuery));
@@ -1213,6 +1298,8 @@ async function importFile(file) {
     const result = await api("/api/import", { method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Filename": encodeURIComponent(file.name) }, body: file });
     toast(result.duplicate ? "这个文件已经导入过，无需重复导入。" : `导入完成：${count(result.conversations)} 个会话，${count(result.messages)} 条消息。`);
     $("conversation-search").value = "";
+    state.pendingGlobalSearch?.cancel();
+    setDateRange("global");
     state.conversationLoaded = false;
     showPage("reader");
     await loadConversations();
@@ -1233,6 +1320,8 @@ async function createDemo(button) {
     const result = await api("/api/demo", { method: "POST", body: {} });
     toast("示例会话已准备好，可以体验阅读与搜索。");
     $("conversation-search").value = "";
+    state.pendingGlobalSearch?.cancel();
+    setDateRange("global");
     await loadConversations();
     const conversation = state.conversations.find((item) => item.is_demo || String(item.title).includes("示例")) || state.conversations.find((item) => item.id === result.conversation_id) || state.conversations[0];
     if (conversation) await selectConversation(conversation.id);
@@ -1284,8 +1373,16 @@ function bindEvents() {
       "open-search-message": () => openSearchMessage(button.dataset.conversationId, id, button),
       "search-more": () => loadGlobalSearch(true, button),
       "clear-global-search": clearGlobalSearch,
+      "clear-message-search": clearMessageSearch,
+      "clear-dates": () => {
+        const scope = button.dataset.scope;
+        (scope === "global" ? state.pendingGlobalSearch : state.pendingMessageSearch)?.cancel();
+        setDateRange(scope);
+        if (scope === "global") loadConversations();
+        else loadMessages(false);
+      },
       "load-earlier": () => loadNewerMessages(button),
-      "exit-message-context": () => { $("message-search").value = ""; loadMessages(false); },
+      "exit-message-context": clearMessageSearch,
       "load-more": () => loadMessages(true, button),
       "load-messages": () => loadMessages(false, button),
       "load-conversations": () => loadConversations(),
@@ -1302,18 +1399,24 @@ function bindEvents() {
     $("settings-save-status").textContent = "目录已选择，保存后生效";
   });
   const searchConversations = debounce(loadConversations);
-  $("conversation-search").addEventListener("input", () => {
+  state.pendingGlobalSearch = searchConversations;
+  const globalSearchChanged = () => {
     state.conversationRequest += 1;
     updateGlobalSearchChrome();
+    searchConversations.cancel();
     searchConversations();
-  });
-  $("conversation-search").addEventListener("keydown", (event) => {
+  };
+  const globalSearchKeydown = (event) => {
     if (event.key === "Escape") { event.preventDefault(); searchConversations.cancel(); clearGlobalSearch(); }
     if (event.key === "Enter") { event.preventDefault(); searchConversations.cancel(); loadConversations(); }
-    if (event.key === "ArrowDown") {
+    if (event.key === "ArrowDown" && event.target.id === "conversation-search") {
       const first = $("conversation-list").querySelector("button:not(:disabled)");
       if (first) { event.preventDefault(); first.focus(); }
     }
+  };
+  ["conversation-search", "global-date-from", "global-date-to"].forEach(id => {
+    $(id).addEventListener("input", globalSearchChanged);
+    $(id).addEventListener("keydown", globalSearchKeydown);
   });
   $("conversation-list").addEventListener("keydown", (event) => {
     if (event.key === "Escape") { $("conversation-search").focus(); return; }
@@ -1327,28 +1430,34 @@ function bindEvents() {
   });
   const searchMessages = debounce(() => loadMessages(false));
   state.pendingMessageSearch = searchMessages;
-  $("message-search").addEventListener("input", () => {
+  const messageSearchChanged = () => {
     state.messagesRequest += 1;
     state.messageContext = null;
+    updateDateFilter("message");
     $("message-context-bar").hidden = true;
+    searchMessages.cancel();
     searchMessages();
-  });
-  $("message-search").addEventListener("keydown", (event) => {
+  };
+  const messageSearchKeydown = (event) => {
     if (event.key === "Enter") { event.preventDefault(); searchMessages.cancel(); loadMessages(false); }
     if (event.key === "Escape") {
       event.preventDefault();
       searchMessages.cancel();
-      if ($("message-search").value) {
-        $("message-search").value = "";
-        loadMessages(false);
-      } else if ($("messages-header").classList.contains("search-open")) {
+      if (hasFilters(searchFilters("message"))) clearMessageSearch();
+      else if ($("messages-header").classList.contains("search-open")) {
         toggleMessageSearch();
         document.querySelector('[data-action="toggle-message-search"]').focus();
       }
+      $("message-date-filter").open = false;
     }
+  };
+  ["message-search", "message-date-from", "message-date-to"].forEach(id => {
+    $(id).addEventListener("input", messageSearchChanged);
+    $(id).addEventListener("keydown", messageSearchKeydown);
   });
   document.addEventListener("click", (event) => {
     if (!event.target.closest("#reader-management") && !event.target.closest('[data-action="open-reader-management"]')) $("reader-management").open = false;
+    if (!event.target.closest("#message-date-filter")) $("message-date-filter").open = false;
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && $("reader-management").open) {

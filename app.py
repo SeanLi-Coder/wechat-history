@@ -490,7 +490,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.response(self.app.reader_library.conversations(query.get("q", [""])[0]))
             if parsed.path == "/api/search":
                 return self.response(self.app.reader_library.search(query.get("q", [""])[0],
-                    int(query.get("offset", ["0"])[0]), int(query.get("limit", ["50"])[0])))
+                    int(query.get("offset", ["0"])[0]), int(query.get("limit", ["50"])[0]),
+                    date_from=query.get("date_from", [""])[0], date_to=query.get("date_to", [""])[0]))
             match = re.fullmatch(r"/api/conversations/([a-zA-Z0-9-]+)/context", parsed.path)
             if match:
                 return self.response(self.app.reader_library.context(match[1],
@@ -498,7 +499,8 @@ class Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(r"/api/conversations/([a-zA-Z0-9-]+)/messages", parsed.path)
             if match:
                 return self.response(self.app.reader_library.messages(match[1], query.get("q", [""])[0],
-                    int(query.get("offset", ["0"])[0]), int(query.get("limit", ["100"])[0])))
+                    int(query.get("offset", ["0"])[0]), int(query.get("limit", ["100"])[0]),
+                    date_from=query.get("date_from", [""])[0], date_to=query.get("date_to", [""])[0]))
             match = re.fullmatch(r"/api/snapshots/([a-zA-Z0-9_.-]+)", parsed.path)
             if match:
                 return self.response(self.app.engine.read_manifest(match[1], self.app.config()["destination"]))

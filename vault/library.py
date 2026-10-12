@@ -8,7 +8,7 @@ import json
 import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -21,6 +21,7 @@ CONVERSATION_SEARCH_LIMIT = 50
 
 
 def normalize_time(value):
+    """Store UTC ISO timestamps, retaining microseconds and the +00:00 suffix."""
     if value in (None, ""):
         return ""
     if isinstance(value, (int, float)) or str(value).replace(".", "", 1).isdigit():
@@ -284,30 +285,79 @@ class Library:
             raise ValueError(f"Search limit must be an integer between 1 and {maximum}")
         return offset, limit
 
-    def _matching_conversations(self, db, query, limit, include_text=False):
+    @staticmethod
+    def _date_bounds(date_from, date_to):
+        """Convert inclusive Shanghai calendar dates to whole-second UTC bounds."""
+        parsed = []
+        for value in (date_from, date_to):
+            if not isinstance(value, str) or (value and not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value)):
+                raise ValueError("Search dates must use YYYY-MM-DD")
+            try:
+                parsed.append(date.fromisoformat(value) if value else None)
+            except ValueError:
+                raise ValueError("Search dates must be valid calendar dates") from None
+        first, last = parsed
+        if first and last and first > last:
+            raise ValueError("Search start date must not be after end date")
+        zone = ZoneInfo("Asia/Shanghai")
+        lower = upper = None
+        if first:
+            try:
+                lower = datetime.combine(first, time.min, zone).astimezone(timezone.utc)
+            except OverflowError:
+                # The earliest local day starts before representable UTC time.
+                lower = datetime.min.replace(tzinfo=timezone.utc)
+        if last:
+            if last == date.max:
+                # Convert before adding the final second, avoiding year 10000.
+                upper = datetime.combine(last, time(23, 59, 59), zone).astimezone(timezone.utc) + timedelta(seconds=1)
+            else:
+                upper = datetime.combine(last + timedelta(days=1), time.min, zone).astimezone(timezone.utc)
+        # Existing whole-second strings end with '+', which sorts before '.'.
+        # Fractional bounds ending in '.000000' would incorrectly exclude old
+        # whole-second records exactly at an inclusive midnight boundary.
+        return tuple(value.isoformat(timespec="seconds") if value else None for value in (lower, upper))
+
+    @staticmethod
+    def _date_clause(bounds, column="timestamp"):
+        lower, upper = bounds
+        if lower is None and upper is None:
+            return "", ()
+        clause, params = f" AND {column}<>''", []
+        if lower is not None:
+            clause += f" AND {column}>=?"
+            params.append(lower)
+        if upper is not None:
+            clause += f" AND {column}<?"
+            params.append(upper)
+        return clause, tuple(params)
+
+    def _matching_conversations(self, db, query, limit, include_text=False, bounds=(None, None)):
         # Find matching conversation IDs once, before joining their message
         # summaries. A correlated LIKE search repeated for every joined
         # message becomes quadratic in large conversations.
         params = []
+        date_sql, date_params = self._date_clause(bounds)
+        summary_date_sql, summary_date_params = self._date_clause(bounds, "m.timestamp")
         if query:
             pattern = self.search_pattern(query)
             match_text = " OR text LIKE ? ESCAPE '\\'" if include_text else ""
             matching = ("SELECT id FROM conversations WHERE title LIKE ? ESCAPE '\\' "
-                        "UNION SELECT conversation_id FROM messages WHERE sender LIKE ? ESCAPE '\\'" + match_text)
-            params = [pattern, pattern] + ([pattern] if include_text else [])
+                        "UNION SELECT conversation_id FROM messages WHERE (sender LIKE ? ESCAPE '\\'" + match_text + ")" + date_sql)
+            params = [pattern, pattern] + ([pattern] if include_text else []) + list(date_params)
         else:
             matching = "SELECT id FROM conversations"
         rows = db.execute("""WITH matching AS (""" + matching + """), summaries AS (
                 SELECT c.id,c.title,COUNT(m.id) AS message_count,MAX(m.timestamp) AS last_message_at
                 FROM matching h JOIN conversations c ON c.id=h.id
-                JOIN messages m ON m.conversation_id=c.id GROUP BY c.id
+                JOIN messages m ON m.conversation_id=c.id WHERE 1=1 """ + summary_date_sql + """ GROUP BY c.id
             ), selected AS (
                 SELECT *,COUNT(*) OVER() AS matching_total FROM summaries
                 ORDER BY last_message_at DESC,id LIMIT ?
             )
             SELECT s.*,(SELECT SUBSTR(text,1,160) FROM messages
-                WHERE conversation_id=s.id ORDER BY timestamp DESC,id DESC LIMIT 1) AS preview
-            FROM selected s ORDER BY last_message_at DESC,id""", (*params, limit)).fetchall()
+                WHERE conversation_id=s.id """ + date_sql + """ ORDER BY timestamp DESC,id DESC LIMIT 1) AS preview
+            FROM selected s ORDER BY last_message_at DESC,id""", (*params, *summary_date_params, limit, *date_params)).fetchall()
         total = rows[0]["matching_total"] if rows else 0
         result = []
         for row in rows:
@@ -323,7 +373,7 @@ class Library:
             rows, _ = self._matching_conversations(db, query, 1000, include_text=True)
         return {"conversations": rows}
 
-    def search(self, query="", offset=0, limit=50):
+    def search(self, query="", offset=0, limit=50, *, date_from="", date_to=""):
         """Search titles/senders and message text/senders without changing SQLite.
 
         Literal substring matching uses SQLite LIKE's ASCII case folding;
@@ -331,45 +381,57 @@ class Library:
         literal. Existing immutable archives use the same read-only queries.
         Global and conversation-local messages are newest first, with IDs
         descending for equal timestamps. LIMIT is applied to IDs before
-        loading full message bodies.
+        loading full message bodies. Optional dates are inclusive Shanghai
+        calendar days and are ANDed with the keyword. A date alone can search.
         """
         query = self._search_query(query)
         offset, limit = self._page(offset, limit)
+        bounds = self._date_bounds(date_from, date_to)
+        date_sql, params = self._date_clause(bounds)
         result = {"query": query, "conversations": [], "conversation_total": 0,
                   "conversation_limit": CONVERSATION_SEARCH_LIMIT, "conversations_has_more": False,
-                  "messages": [], "total": 0, "offset": offset, "limit": limit, "has_more": False}
-        if not query:
+                  "messages": [], "total": 0, "offset": offset, "limit": limit, "has_more": False,
+                  "date_from": date_from, "date_to": date_to}
+        if not query and not date_sql:
             return result
-        pattern = self.search_pattern(query)
+        clause = "1=1" + date_sql
+        if query:
+            clause += " AND (text LIKE ? ESCAPE '\\' OR sender LIKE ? ESCAPE '\\')"
+            pattern = self.search_pattern(query)
+            params += (pattern, pattern)
         with self.connect() as db:
             db.execute("BEGIN")
             result["conversations"], result["conversation_total"] = self._matching_conversations(
-                db, query, CONVERSATION_SEARCH_LIMIT)
+                db, query, CONVERSATION_SEARCH_LIMIT, bounds=bounds)
             result["conversations_has_more"] = result["conversation_total"] > len(result["conversations"])
-            result["total"] = db.execute("""SELECT COUNT(*) FROM messages
-                WHERE text LIKE ? ESCAPE '\\' OR sender LIKE ? ESCAPE '\\'""", (pattern, pattern)).fetchone()[0]
+            result["total"] = db.execute("SELECT COUNT(*) FROM messages WHERE " + clause, params).fetchone()[0]
             if offset < result["total"]:
                 rows = db.execute("""SELECT m.id,m.conversation_id,c.title AS conversation_title,
                         m.sender,m.text,m.timestamp,m.is_self
-                    FROM (SELECT id FROM messages WHERE text LIKE ? ESCAPE '\\' OR sender LIKE ? ESCAPE '\\'
+                    FROM (SELECT id FROM messages WHERE """ + clause + """
                           ORDER BY timestamp DESC,id DESC LIMIT ? OFFSET ?) page
                     JOIN messages m ON m.id=page.id JOIN conversations c ON c.id=m.conversation_id
-                    ORDER BY m.timestamp DESC,m.id DESC""", (pattern, pattern, limit, offset)).fetchall()
+                    ORDER BY m.timestamp DESC,m.id DESC""", (*params, limit, offset)).fetchall()
                 result["messages"] = [{**dict(row), "is_self": bool(row["is_self"])} for row in rows]
                 self._attach_avatars(db, result["messages"], "message")
         result["has_more"] = offset + len(result["messages"]) < result["total"]
         return result
 
-    def messages(self, conversation_id, query="", offset=0, limit=100):
-        """Return a newest-first page, breaking timestamp ties by descending ID."""
+    def messages(self, conversation_id, query="", offset=0, limit=100, *, date_from="", date_to=""):
+        """Return a newest-first page, optionally within inclusive Shanghai dates."""
         query = self._search_query(query)
         offset, limit = self._page(offset, limit, 500)
+        date_sql, date_params = self._date_clause(self._date_bounds(date_from, date_to))
         with self.connect() as db:
+            db.execute("BEGIN")
             conversation = db.execute("SELECT id,title FROM conversations WHERE id=?", (conversation_id,)).fetchone()
             if not conversation:
                 raise KeyError("Conversation not found")
-            params = (conversation_id, query, self.search_pattern(query), self.search_pattern(query))
-            clause = "conversation_id=? AND (?='' OR text LIKE ? ESCAPE '\\' OR sender LIKE ? ESCAPE '\\')"
+            params = (conversation_id, *date_params)
+            clause = "conversation_id=?" + date_sql
+            if query:
+                clause += " AND (text LIKE ? ESCAPE '\\' OR sender LIKE ? ESCAPE '\\')"
+                params += (self.search_pattern(query), self.search_pattern(query))
             total = db.execute("SELECT COUNT(*) FROM messages WHERE " + clause, params).fetchone()[0]
             rows = db.execute("SELECT id,sender,text,timestamp,is_self FROM messages WHERE " + clause +
                               " ORDER BY timestamp DESC,id DESC LIMIT ? OFFSET ?", (*params, limit, offset)).fetchall()
@@ -378,7 +440,8 @@ class Library:
             conversation = dict(conversation)
             self._attach_avatars(db, messages, "message")
             self._attach_avatars(db, [conversation], "conversation")
-            return {"messages": messages, "total": total, "conversation": conversation}
+            return {"messages": messages, "total": total, "conversation": conversation,
+                    "date_from": date_from, "date_to": date_to}
 
     def context(self, conversation_id, message_id, limit=100):
         """Return an indexed newest-first window containing one exact message.

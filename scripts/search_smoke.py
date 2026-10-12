@@ -20,7 +20,9 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
-from browser_smoke import check_avatar_fallbacks, expect_avatar, seed_synthetic_avatars
+from browser_smoke import (apply_date_search, check_avatar_fallbacks, check_date_filters, check_date_pagination,
+                           check_date_races, check_mobile_dates, expect_avatar,
+                           seed_synthetic_avatars, synthetic_date_conversation)
 
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
@@ -57,6 +59,7 @@ def synthetic_server(work):
         {"title": "产品讨论", "messages": [{"sender": "小夏", "text": "合成方案", "timestamp": base.isoformat()}]},
     ] + [{"title": f"合成群 {index + 1}", "messages": [
         {"sender": "共享昵称", "text": "范围提示测试", "timestamp": base.isoformat()}]} for index in range(51)]}
+    document["conversations"].append(synthetic_date_conversation())
     library.import_file(json.dumps(document, ensure_ascii=False).encode(), "synthetic-search.json")
     conversation_id = next(row["id"] for row in library.conversations()["conversations"] if row["title"] == TITLE)
     rows = library.messages(conversation_id, limit=500)["messages"]
@@ -114,7 +117,7 @@ def run(browser_path=None, artifacts=None):
                 browser = playwright.chromium.launch(**options)
                 try:
                     context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="zh-CN",
-                                                  timezone_id="Asia/Shanghai", reduced_motion="reduce", service_workers="block")
+                                                  timezone_id="America/Los_Angeles", reduced_motion="reduce", service_workers="block")
                     stale_routes = []
 
                     def route_request(route):
@@ -138,7 +141,7 @@ def run(browser_path=None, artifacts=None):
                     page.add_init_script("document.addEventListener('securitypolicyviolation', event => window.recordSearchCsp(event.effectiveDirective));")
                     page.goto(origin + "/#token=" + token, wait_until="domcontentloaded")
                     page.locator('.nav-item[data-page="reader"]').click()
-                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(54)
+                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(55)
                     search = page.locator("#conversation-search")
                     conversation = page.locator(f'[data-action="select-conversation"][data-id="{conversation_id}"]')
                     expect_avatar(conversation.locator(".conversation-avatar"), avatars["conversation"])
@@ -150,6 +153,12 @@ def run(browser_path=None, artifacts=None):
                     expect(page.locator(".message-item").nth(1).locator(".avatar-fallback")).to_be_visible()
                     checks.append("explicit_identity_avatars_in_list_heading_and_messages_without_sender_guessing")
                     check_avatar_fallbacks(page, conversation_id, 100, checks)
+                    check_date_filters(page, checks)
+                    check_date_pagination(page, "2024-09-15", TITLE, 350, checks)
+                    check_date_races(page, checks)
+                    if artifacts:
+                        artifacts.mkdir(parents=True, exist_ok=True)
+                    check_mobile_dates(page, checks, artifacts / "synthetic-date-mobile.png" if artifacts else None)
 
                     def query(value):
                         with page.expect_response(lambda response: urlsplit(response.url).path == "/api/search"
@@ -183,7 +192,7 @@ def run(browser_path=None, artifacts=None):
                     expect(page.locator(".message-item")).to_have_count(2)
                     checks.append("global_and_conversation_sender_search_with_keyboard")
 
-                    query("公园")
+                    apply_date_search(page, "global", "公园", "2024-09-15", "2024-09-15")
                     expect(page.locator('[data-action="open-search-message"]')).to_have_count(50)
                     page.locator('[data-action="search-more"]').click()
                     expect(page.locator('[data-action="open-search-message"]')).to_have_count(100)
@@ -192,6 +201,8 @@ def run(browser_path=None, artifacts=None):
                     expect(page.locator('[data-action="search-more"]')).to_have_count(0)
                     assert len(set(page.locator('[data-action="open-search-message"]').evaluate_all("nodes => nodes.map(node => node.dataset.id)"))) == 130
                     checks.append("global_keyword_pagination_without_duplicates")
+                    page.locator('#global-date-filter [data-action="clear-dates"]').click()
+                    expect(page.locator("#global-date-from")).to_have_value("")
 
                     query("共享昵称")
                     expect(page.locator('[data-action="select-conversation"]')).to_have_count(50)
@@ -249,7 +260,7 @@ def run(browser_path=None, artifacts=None):
                     expect(page.locator("#conversation-list")).to_contain_text("没有找到匹配结果")
                     page.locator('[data-action="clear-global-search"]').first.click()
                     expect(search).to_have_value("")
-                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(54)
+                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(55)
                     checks.append("literal_casefold_empty_and_clear_search")
 
                     search.fill("delay-old")
@@ -300,7 +311,7 @@ def run(browser_path=None, artifacts=None):
                     page.locator('[data-action="reader-back"]').click()
                     expect(search).to_be_visible()
                     search.press("Escape")
-                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(54)
+                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(55)
                     checks.append("mobile_results_context_sender_filter_back_and_escape")
                     if artifacts:
                         page.set_viewport_size({"width": 1440, "height": 900})

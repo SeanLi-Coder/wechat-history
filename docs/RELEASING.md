@@ -1,6 +1,6 @@
 # 源码发布
 
-首次公开版本为 `v0.2.0`，下面以 `v0.3.0` 演示打包。Release 提供可审阅、可重新构建的源码 ZIP，运行前需要自行安装 Python 和相关依赖。它不是内置 Python、数据库工具和媒体解码器的通用安装包。
+首次公开版本为 `v0.2.0`，下面以 `v0.4.0` 演示打包。Release 提供可审阅、可重新构建的源码 ZIP，运行前需要自行安装 Python 和相关依赖。它不是内置 Python、数据库工具和媒体解码器的通用安装包。
 
 ## 用户安装
 
@@ -32,16 +32,16 @@ open dist/拾聊.app
 在项目根目录执行：
 
 ```bash
-python3 -B scripts/package_release.py --check --version v0.3.0
-python3 -B scripts/package_release.py --version v0.3.0
+python3 -B scripts/package_release.py --check --version v0.4.0
+python3 -B scripts/package_release.py --version v0.4.0
 ```
 
 默认输出到 `dist/releases/`：
 
-- `shiliao-0.3.0-source.zip`
-- `shiliao-0.3.0-source.zip.sha256`
+- `shiliao-0.4.0-source.zip`
+- `shiliao-0.4.0-source.zip.sha256`
 
-ZIP 顶层目录为 `shiliao-0.3.0/`，附有 `RELEASE-MANIFEST.json`，逐个记录源码相对路径、字节数与 SHA-256。清单不包含构建机器路径、时间、账号、密钥或运行状态。版本直接读取 `vault/__init__.py` 的字面量声明；传入版本不一致会失败，不执行该模块。
+ZIP 顶层目录为 `shiliao-0.4.0/`，附有 `RELEASE-MANIFEST.json`，逐个记录源码相对路径、字节数与 SHA-256。清单不包含构建机器路径、时间、账号、密钥或运行状态。版本直接读取 `vault/__init__.py` 的字面量声明；传入版本不一致会失败，不执行该模块。
 
 可指定空的 `--output-dir`。已有同名 ZIP 或校验文件会被保留，脚本不会覆盖。构建中发现源文件变化时停止发布并清理临时产物。
 
@@ -49,7 +49,7 @@ ZIP 顶层目录为 `shiliao-0.3.0/`，附有 `RELEASE-MANIFEST.json`，逐个�
 
 ```bash
 cd dist/releases
-shasum -a 256 -c shiliao-0.3.0-source.zip.sha256
+shasum -a 256 -c shiliao-0.4.0-source.zip.sha256
 ```
 
 打包器固定文件顺序、ZIP 时间戳、权限和压缩级别，不使用本机文件的修改时间。相同源码、相同 Python / zlib 工具链重复构建得到相同字节；不同压缩库版本之间不承诺 ZIP 字节完全相同，内部逐文件哈希仍可核对。
@@ -79,7 +79,7 @@ python3 -m pip install -r requirements-dev.txt
 python3 -B -m unittest discover -s tests -v
 python3 -B scripts/browser_smoke.py
 python3 -B scripts/search_smoke.py
-python3 -B scripts/package_release.py --check --version v0.3.0
+python3 -B scripts/package_release.py --check --version v0.4.0
 ```
 
 浏览器测试需要其声明的 Playwright / Chrome 环境。测试使用合成数据，不能把本机真实聊天库、截图、取钥输出或私人验证日志作为附件提交。`scripts/test_key_capture.py` 是人工 C 子进程与人工数据库的独立 LLDB 验证，可在满足 Apple Silicon / LLDB 条件的机器手动执行；普通打包不运行它，也不启动微信。

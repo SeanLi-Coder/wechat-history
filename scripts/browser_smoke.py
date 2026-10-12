@@ -73,6 +73,249 @@ def open_management(page):
     return management
 
 
+def synthetic_date_conversation():
+    return {"title": "合成日期边界", "messages": [
+        {"sender": "日期同伴", "text": "日期边界 之前", "timestamp": "2023-12-31T15:59:59Z"},
+        {"sender": "日期同伴", "text": "日期边界 开始", "timestamp": "2023-12-31T16:00:00Z"},
+        {"sender": "日期同伴", "text": "日期边界 中午", "timestamp": "2024-01-01T04:00:00Z"},
+        {"sender": "日期同伴", "text": "日期边界 结束", "timestamp": "2024-01-01T15:59:59.999Z"},
+        {"sender": "日期同伴", "text": "日期边界 次日", "timestamp": "2024-01-01T16:00:00Z"},
+    ]}
+
+
+def apply_date_search(page, scope, query="", date_from="", date_to=""):
+    details = page.locator(f"#{scope}-date-filter")
+    if not details.evaluate("node => node.open"):
+        details.locator("summary").click()
+    keyword = page.locator("#conversation-search" if scope == "global" else "#message-search")
+    expected = {"q": query, "date_from": date_from, "date_to": date_to}
+
+    def matching_response(response):
+        parsed = urlsplit(response.url)
+        if not (parsed.path == "/api/search" if scope == "global" else parsed.path.endswith("/messages")):
+            return False
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        return all(params.get(name, [""])[0] == value for name, value in expected.items())
+
+    with page.expect_response(matching_response):
+        keyword.fill(query)
+        # Filling the keyword can close the local date popover.
+        if not details.evaluate("node => node.open"):
+            details.locator("summary").click()
+        page.locator(f"#{scope}-date-from").fill(date_from)
+        page.locator(f"#{scope}-date-to").fill(date_to)
+    key = json.dumps([query, date_from, date_to], ensure_ascii=False, separators=(",", ":"))
+    target = "#global-search-status" if scope == "global" else "#message-list"
+    expect(page.locator(target)).to_have_attribute("data-filters", key)
+
+
+def check_date_filters(page, checks):
+    """Exercise Shanghai calendar boundaries under a different browser timezone."""
+    search = page.locator("#conversation-search")
+    apply_date_search(page, "global", date_from="2024-01-01", date_to="2024-01-01")
+    expect(page.locator(".search-message-result")).to_have_count(3)
+    expect(page.locator(".search-result-heading time")).to_have_text([
+        "2024-01-01 23:59", "2024-01-01 12:00", "2024-01-01 00:00"])
+    assert page.locator(".search-result-heading time").evaluate_all(
+        "nodes => nodes.every(node => node.dateTime.endsWith('Z') && node.title.includes('北京时间'))")
+    expect(page.locator("#global-date-filter")).to_contain_text("按北京时间")
+    page.locator("#global-date-filter summary").click()
+    expect(page.locator("#global-date-label")).to_have_text("日期 · 已选")
+    button = page.locator('[data-action="select-conversation"]').filter(has_text="合成日期边界")
+    expect(button.locator("time")).to_have_text("2024-01-01 23:59")
+    button.click()
+    expect(page.locator(".message-item")).to_have_count(3)
+    expect(page.locator("#message-date-from")).to_have_value("2024-01-01")
+    expect(page.locator("#message-date-to")).to_have_value("2024-01-01")
+    expect(page.locator(".message-meta time")).to_have_text([
+        "2024-01-01 23:59", "2024-01-01 12:00", "2024-01-01 00:00"])
+    page.locator(".search-message-result").filter(has_text="日期边界 开始").click()
+    expect(page.locator(".message-item")).to_have_count(5)
+    expect(page.locator(".message-item.is-target .message-text")).to_have_text("日期边界 开始")
+    expect(page.locator("#message-date-from")).to_have_value("")
+    expect(page.locator("#message-date-to")).to_have_value("")
+    expect(page.locator("#global-date-from")).to_have_value("2024-01-01")
+    expect(page.locator("#message-context-caption")).to_contain_text("前后文")
+    checks.append("pure_date_search_inclusive_shanghai_midnight_and_unfiltered_context")
+
+    apply_date_search(page, "global", "日期边界", date_from="2024-01-01")
+    expect(page.locator(".search-message-result")).to_have_count(4)
+    apply_date_search(page, "global", "日期边界", date_to="2024-01-01")
+    expect(page.locator(".search-message-result")).to_have_count(4)
+    apply_date_search(page, "global", date_to="2023-12-31")
+    expect(page.locator(".search-message-result")).to_have_count(1)
+    expect(page.locator(".search-result-preview")).to_have_text("日期边界 之前")
+    apply_date_search(page, "global", "中午", "2024-01-01", "2024-01-01")
+    expect(page.locator(".search-message-result")).to_have_count(1)
+    apply_date_search(page, "message", "日期边界", date_from="2024-01-01")
+    expect(page.locator(".message-item")).to_have_count(4)
+    apply_date_search(page, "message", date_to="2024-01-01")
+    expect(page.locator(".message-item")).to_have_count(4)
+    apply_date_search(page, "message", "中午", "2024-01-01", "2024-01-01")
+    expect(page.locator(".message-item")).to_have_count(1)
+    expect(page.locator(".message-meta time")).to_have_text("2024-01-01 12:00")
+    page.locator('#message-date-filter [data-action="clear-dates"]').click()
+    expect(page.locator("#message-date-from")).to_have_value("")
+    expect(page.locator("#message-search")).to_have_value("中午")
+    checks.append("single_sided_dates_keyword_intersection_and_clear_dates_only")
+
+    apply_date_search(page, "global", "中午", "2024-01-01", "2024-01-01")
+    page.locator("#global-date-from").fill("2024-01-02")
+    expect(page.locator("#conversation-list")).to_contain_text("结束日期不能早于开始日期")
+    expect(page.locator(".search-message-result")).to_have_count(0)
+    expect(page.locator('[data-action="search-more"]')).to_have_count(0)
+    apply_date_search(page, "message", "中午", "2024-01-01", "2024-01-01")
+    page.locator("#message-date-from").fill("2024-01-02")
+    expect(page.locator("#message-list")).to_contain_text("结束日期不能早于开始日期")
+    expect(page.locator(".message-item")).to_have_count(0)
+    page.locator("#message-date-from").press("Escape")
+    expect(page.locator(".message-item")).to_have_count(5)
+    expect(page.locator("#message-search")).to_have_value("")
+    expect(page.locator("#message-date-from")).to_have_value("")
+    expect(page.locator("#message-date-to")).to_have_value("")
+    search.press("Escape")
+    expect(search).to_have_value("")
+    expect(page.locator("#global-date-from")).to_have_value("")
+    expect(page.locator("#global-date-to")).to_have_value("")
+    expect(page.locator("#global-search-status")).to_be_hidden()
+    page.locator("#global-date-filter").evaluate("node => { node.open = false; }")
+    checks.append("invalid_date_ranges_hide_old_results_and_escape_clears_all_filters")
+
+
+def check_date_pagination(page, day, title, total, checks):
+    requests = []
+
+    def record_request(request):
+        parsed = urlsplit(request.url)
+        if parsed.path == "/api/search" or parsed.path.endswith("/messages"):
+            requests.append((parsed.path, parse_qs(parsed.query, keep_blank_values=True)))
+
+    page.on("request", record_request)
+    try:
+        apply_date_search(page, "global", date_from=day, date_to=day)
+        expect(page.locator(".search-message-result")).to_have_count(50)
+        first = page.locator(".search-message-result").evaluate_all("nodes => nodes.map(node => node.dataset.id)")
+        page.locator('[data-action="search-more"]').click()
+        expect(page.locator(".search-message-result")).to_have_count(100)
+        combined = page.locator(".search-message-result").evaluate_all("nodes => nodes.map(node => node.dataset.id)")
+        assert combined[:50] == first and len(set(combined)) == 100
+        page.locator('[data-action="select-conversation"]').filter(has_text=title).click()
+        expect(page.locator(".message-item")).to_have_count(100)
+        first = page.locator(".message-item").evaluate_all("nodes => nodes.map(node => node.dataset.messageId)")
+        expect(page.locator("#message-date-from")).to_have_value(day)
+        expect(page.locator("#message-date-to")).to_have_value(day)
+        page.locator('[data-action="load-more"]').click()
+        expect(page.locator(".message-item")).to_have_count(min(200, total))
+        combined = page.locator(".message-item").evaluate_all("nodes => nodes.map(node => node.dataset.messageId)")
+        assert combined[:100] == first and len(set(combined)) == len(combined)
+        assert all(params.get("date_from") == [day] and params.get("date_to") == [day]
+                   for _, params in requests), "Pagination lost the active date range"
+        assert any(path == "/api/search" and params.get("offset") == ["50"] for path, params in requests)
+        assert any(path.endswith("/messages") and params.get("offset") == ["100"] for path, params in requests)
+        checks.append("pure_date_global_and_local_pagination_preserve_range_and_order")
+    finally:
+        page.remove_listener("request", record_request)
+    page.locator("#conversation-search").press("Escape")
+    page.locator("#message-search").press("Escape")
+    expect(page.locator("#message-date-from")).to_have_value("")
+
+
+def check_date_races(page, checks):
+    """Hold old responses while only the date range changes."""
+    pending = []
+    armed = {"scope": "global"}
+    matching = re.compile(r"/api/(?:search|conversations/[^/]+/messages)\?")
+
+    def intercept(route):
+        parsed = urlsplit(route.request.url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        scope = "global" if parsed.path == "/api/search" else "message"
+        if (armed["scope"] == scope and params.get("q") == ["日期边界"]
+                and params.get("date_to") == ["2024-01-01"] and not params.get("date_from")):
+            armed["scope"] = None
+            pending.append((route, route.fetch()))
+        else:
+            route.continue_()
+
+    def start_old(scope):
+        keyword = page.locator("#conversation-search" if scope == "global" else "#message-search")
+        keyword.fill("日期边界")
+        details = page.locator(f"#{scope}-date-filter")
+        if not details.evaluate("node => node.open"):
+            details.locator("summary").click()
+        page.locator(f"#{scope}-date-from").fill("")
+        page.locator(f"#{scope}-date-to").fill("2024-01-01")
+        deadline = time.monotonic() + 5
+        while not pending and time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+        assert pending, "The controlled date search did not start"
+
+    page.route(matching, intercept)
+    try:
+        start_old("global")
+        apply_date_search(page, "global", "日期边界", date_from="2024-01-02")
+        expect(page.locator(".search-message-result")).to_have_count(1)
+        route, response = pending.pop()
+        route.fulfill(response=response)
+        page.wait_for_timeout(150)
+        expect(page.locator(".search-message-result")).to_have_count(1)
+        expect(page.locator(".search-result-preview")).to_have_text("日期边界 次日")
+        page.locator('[data-action="select-conversation"]').filter(has_text="合成日期边界").click()
+        expect(page.locator(".message-item")).to_have_count(1)
+        armed["scope"] = "message"
+        start_old("message")
+        apply_date_search(page, "message", "日期边界", date_from="2024-01-02")
+        route, response = pending.pop()
+        route.fulfill(response=response)
+        page.wait_for_timeout(150)
+        expect(page.locator(".message-item")).to_have_count(1)
+        expect(page.locator(".message-text")).to_have_text("日期边界 次日")
+        page.locator("#message-date-from").evaluate("""input => {
+            input.value = '2024-01-01';
+            input.dispatchEvent(new Event('input', {bubbles: true}));
+            document.querySelector('.search-message-result').click();
+        }""")
+        expect(page.locator(".message-item.is-target .message-text")).to_have_text("日期边界 次日")
+        page.wait_for_timeout(450)
+        expect(page.locator(".message-item")).to_have_count(5)
+        expect(page.locator(".message-item.is-target")).to_have_count(1)
+        expect(page.locator("#message-date-from")).to_have_value("")
+        checks.append("date_only_response_races_and_pending_local_timer_preserve_new_context")
+    finally:
+        page.unroute(matching, intercept)
+        for route, response in pending:
+            route.fulfill(response=response)
+    page.locator("#conversation-search").press("Escape")
+    page.locator("#message-search").press("Escape")
+
+
+def check_mobile_dates(page, checks, screenshot=None):
+    viewport = page.viewport_size
+    page.set_viewport_size({"width": 400, "height": 900})
+    if not page.locator("#conversation-search").is_visible():
+        page.locator('[data-action="reader-back"]').click()
+    apply_date_search(page, "global", date_from="2024-01-01", date_to="2024-01-01")
+    expect(page.locator(".search-message-result")).to_have_count(3)
+    assert page.evaluate("document.documentElement.scrollWidth === 400")
+    page.locator(".search-message-result").filter(has_text="日期边界 开始").click()
+    expect(page.locator(".message-item")).to_have_count(5)
+    page.locator('[data-action="toggle-message-search"]').click()
+    apply_date_search(page, "message", date_from="2024-01-01", date_to="2024-01-01")
+    expect(page.locator(".message-item")).to_have_count(3)
+    assert page.evaluate("document.documentElement.scrollWidth === 400")
+    assert page.locator("#message-date-filter .date-filter-panel").evaluate(
+        "node => node.getBoundingClientRect().left >= 0 && node.getBoundingClientRect().right <= 400")
+    if screenshot:
+        page.screenshot(path=str(screenshot))
+    page.locator("#message-date-from").press("Escape")
+    expect(page.locator(".message-item")).to_have_count(5)
+    page.locator('[data-action="reader-back"]').click()
+    page.locator("#conversation-search").press("Escape")
+    page.locator("#global-date-filter").evaluate("node => { node.open = false; }")
+    page.set_viewport_size(viewport)
+    checks.append("date_filters_and_full_timestamps_fit_400px_viewport")
+
+
 def seed_synthetic_avatars(library, work: Path, conversation_id, message_ids) -> dict:
     """Use distinct generated PNGs and explicit identities, never display names."""
     urls = {}
@@ -534,6 +777,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                                for index in range(105)]
         pagination_messages[4]["timestamp"] = pagination_messages[5]["timestamp"]
         document["conversations"].append({"title": "合成分页 · 顺序校验", "messages": pagination_messages})
+        document["conversations"].append(synthetic_date_conversation())
         expected_pages = [message["text"] for message in reversed(pagination_messages)]
         export_path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
         server_log_path = work / "server.log"
@@ -563,7 +807,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                         options["executable_path"] = str(chrome)
                     browser = playwright.chromium.launch(**options)
                     context = browser.new_context(viewport={"width": 1440, "height": 1000},
-                                                  locale="zh-CN", timezone_id="Asia/Shanghai",
+                                                  locale="zh-CN", timezone_id="America/Los_Angeles",
                                                   reduced_motion="reduce", service_workers="block")
                     external_requests = []
 
@@ -656,8 +900,8 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                         page.locator("#import-file").set_input_files(export_path)
                     assert import_response.value.status == 200, "The import request failed."
                     imported = api_get("/api/status")["library"]
-                    assert imported["messages"] == 109 and imported["conversations"] == 3, "The import lost records."
-                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(3)
+                    assert imported["messages"] == 114 and imported["conversations"] == 4, "The import lost records."
+                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(4)
                     expect(page.locator("#conversation-title")).to_have_text("合成测试 · 周末计划")
                     expect(page.locator(".message-bubble")).to_have_count(3)
                     expect(page.locator(".message-bubble").first).to_have_text(html_text)
@@ -696,16 +940,22 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     page.locator("#conversation-search").fill("smoke-no-match")
                     expect(page.locator('[data-action="select-conversation"]')).to_have_count(0)
                     page.locator("#conversation-search").fill("")
-                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(3)
+                    expect(page.locator('[data-action="select-conversation"]')).to_have_count(4)
                     checks.append("conversation_and_message_search")
                     avatars = check_synthetic_avatars(page, work, state, checks)
+                    check_date_filters(page, checks)
+                    check_date_pagination(page, "2024-03-01", "合成分页 · 顺序校验", 105, checks)
+                    check_date_races(page, checks)
+                    check_mobile_dates(page, checks, artifacts / "date-mobile.png")
+                    page.locator('[data-action="select-conversation"]').filter(has_text="周末计划").click()
+                    expect(page.locator(".message-item")).to_have_count(3)
                     clear_toasts(page)
                     reader_screenshot = artifacts / "reader.png"
                     page.screenshot(path=str(reader_screenshot), full_page=True)
                     screenshots.append(str(reader_screenshot))
 
                     go_to(page, "overview")
-                    expect(page.locator("#stat-messages")).to_have_text("109")
+                    expect(page.locator("#stat-messages")).to_have_text("114")
                     clear_toasts(page)
                     overview_screenshot = artifacts / "overview.png"
                     page.screenshot(path=str(overview_screenshot), full_page=True)
@@ -717,6 +967,15 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     page.screenshot(path=str(media_screenshot), full_page=True)
                     screenshots.append(str(media_screenshot))
                     check_readable_archive(page, work, state, job_finished, checks, avatars)
+                    apply_date_search(page, "global", date_from="2024-01-01", date_to="2024-01-01")
+                    expect(page.locator(".search-message-result")).to_have_count(3)
+                    page.locator(".search-message-result").filter(has_text="日期边界 开始").click()
+                    expect(page.locator(".message-item")).to_have_count(5)
+                    expect(page.locator("#message-context-caption")).to_contain_text("不受日期限制")
+                    page.locator("#conversation-search").press("Escape")
+                    page.locator('[data-action="select-conversation"]').filter(has_text="周末计划").click()
+                    expect(page.locator(".media-card")).to_have_count(3)
+                    checks.append("saved_readable_archive_supports_date_search_and_complete_context")
 
                     page.set_viewport_size({"width": 400, "height": 900})
                     mobile_widths = [check_mobile_width(page, name)
