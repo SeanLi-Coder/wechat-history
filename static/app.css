@@ -118,6 +118,11 @@ h1 { font-size: 30px; line-height: 1.4; font-weight: 600; letter-spacing: .2px; 
 .archive-file-icon { flex-shrink: 0; width: 36px; height: 39px; padding: 9px; border-radius: 7px; color: #b0c7b6; background: #354239; }
 .archive-title { color: #d7dfdb; font-size: 13px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
 .archive-detail { margin-top: 4px; color: #9ea9a3; font-size: 11px; }
+.archive-kinds { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; margin-top: 6px; }
+.archive-reading-note { color: #a9b9ae; font-size: 11px; }
+.archive-open { color: #a3e7b6; }
+.archive-actions { flex-wrap: wrap; }
+.archive-open { flex-basis: 100%; justify-content: flex-end; }
 .archive-size { color: #d1ddd4; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .archive-size small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
 .archive-actions { display: flex; justify-content: flex-end; align-items: center; gap: 13px; white-space: nowrap; }
@@ -130,6 +135,7 @@ h1 { font-size: 30px; line-height: 1.4; font-weight: 600; letter-spacing: .2px; 
 .progress-track { height: 5px; margin: 12px 0 9px; background: #425448; border-radius: 5px; overflow: hidden; }
 .progress-fill { height: 100%; background: #6fd08b; border-radius: 5px; transition: width .4s; }
 .job-detail { color: #afc1b1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-open { margin-top: 8px; color: #adE8bd; }
 .job-error { background: #40332e; border-color: #6a4b3d; }
 .job-error .job-top, .job-error .job-detail { color: #f0c3ab; }
 /* Reading uses a fixed-height desktop workspace with independent scroll areas. */
@@ -286,6 +292,25 @@ video.media-player { max-height: 300px; background: #181d1f; }
 /* Shared settings, dialogs and status surfaces use the same dark palette. */
 .settings-page { max-width: 1000px; }
 .settings-card { margin-bottom: 20px; }
+.update-card { margin-top: 28px; }
+.update-card .settings-title > .badge { margin-left: auto; }
+.update-auto-row { display: flex; align-items: center; gap: 20px; }
+.update-auto-row > div { min-width: 0; }
+.update-auto-row .field-label { margin-bottom: 4px; }
+.update-auto-row .field-help { margin-top: 0; }
+.update-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; margin: 22px 0 16px; }
+.update-versions dt { color: #aab8ae; font-size: 12px; }
+.update-versions dd { margin: 6px 0 0; color: #e1ece4; font-size: 17px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.update-status { color: #c6d6cb; font-size: 13px; line-height: 1.8; }
+.update-download { padding: 15px; margin-top: 15px; border: 1px solid #475b4e; border-radius: 8px; background: #29382f; }
+.update-download-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 12px; color: #c8e4d0; }
+.update-download-heading strong { font-weight: 550; }
+.update-download progress { display: block; width: 100%; height: 8px; margin: 13px 0 8px; accent-color: #6ed58f; }
+.update-download progress::-webkit-progress-bar { background: #415248; border-radius: 6px; }
+.update-download progress::-webkit-progress-value { background: #6ed58f; border-radius: 6px; }
+.update-error { padding: 11px 13px; margin-top: 15px; border: 1px solid #775547; border-radius: 7px; background: #44362e; color: #f1c4ad; font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+.update-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 19px; }
+.update-privacy { margin-top: 15px; }
 .settings-title { display: flex; align-items: center; gap: 12px; padding: 22px 25px; border-bottom: 1px solid var(--line); }
 .settings-title h2 { font-size: 16px; font-weight: 550; }
 .settings-title p { margin-top: 4px; color: var(--muted); font-size: 12px; }

@@ -61,6 +61,12 @@ const state = {
   readerImport: null,
   importRequest: 0,
   importTrigger: null,
+  updates: null,
+  updateBusy: "",
+  updateError: "",
+  updateRevision: 0,
+  updateRestartPending: false,
+  updatePendingEnabled: null,
 };
 
 function icon(name, className = "icon") {
@@ -309,8 +315,8 @@ function localizeError(message, code) {
     "Import must contain 1 byte to 100 MB": "请选择有内容且不超过 100 MB 的聊天记录文件。",
     "Message is missing text/content": "导入记录中有消息缺少 text 或 content 字段，请检查文件格式。",
     "Not found": "未找到该文件或会话，请刷新后重试。",
-    "Select a regular readable ZIP archive": "请选择拾聊保存的可读 ZIP 归档。",
-    "This ZIP is not a supported readable archive": "这份 ZIP 不是拾聊可读归档，请选择「保存可读归档」生成的文件。",
+    "Select a regular readable ZIP archive": "请选择拾聊可读归档或本软件生成的微信原始备份 ZIP。",
+    "This ZIP is not a supported readable archive": "这份 ZIP 不是支持的拾聊可读归档。微信原始备份请通过「打开归档」读取；其他 ZIP 无法直接阅读。",
     "A media object is missing; the readable archive was not created": "部分媒体副本缺失，请重新读取聊天后再保存归档。",
     "A media object changed while archiving": "保存归档时媒体发生变化，请等当前读取完成后重试。",
     "The readable archive changed after opening": "归档文件已发生变化，请重新打开这份归档。",
@@ -320,6 +326,29 @@ function localizeError(message, code) {
   if (exact[message]) return exact[message];
   if (!message) return "操作未完成，请检查目录权限或文件格式后重试。";
   return /[\u3400-\u9fff]/.test(message) ? message : `操作未完成，请检查目录权限或文件格式。详细信息：${message}`;
+}
+
+function localizeUpdateError(message, code) {
+  const errors = {
+    unsupported_update_platform: "自动更新仅支持 Apple 芯片 Mac 上已安装的拾聊应用。",
+    update_busy: "正在准备另一个更新，请稍后重试。",
+    operation_busy: "请等待当前备份或整理任务完成后再更新。",
+    installation_directory_not_writable: "无法写入应用所在目录。请将拾聊移到「应用程序」后重新检查更新。",
+    update_failed: "暂时无法完成更新，请检查网络连接和可用磁盘空间后重试。",
+    invalid_update_signature: "更新签名验证未通过，本次没有安装。请稍后重新检查更新。",
+    update_metadata_expired: "更新信息已过期，请重新检查更新。",
+    update_rollback_rejected: "更新版本校验未通过，请重新检查更新。",
+    wrong_update_target: "这份更新不适用于当前 Mac，请重新检查更新。",
+    update_not_newer: "当前已是这个版本或更新的版本，无需安装。",
+    staged_bundle_changed: "已准备的更新文件发生变化，请重新检查并下载更新。",
+    invalid_delta_base: "当前应用与增量更新不匹配，请重新检查更新以获取完整版本。",
+  };
+  if (errors[code || message]) return errors[code || message];
+  if (message && /[\u3400-\u9fff]/.test(message)) return message;
+  if (/hash|signature|mismatch|invalid|unsafe|untrusted|duplicate|special/.test(code || message || "")) {
+    return "更新文件的完整性或安全校验未通过，本次没有安装。请重新检查更新。";
+  }
+  return "更新尚未完成，请检查网络连接和可用磁盘空间后重试。";
 }
 
 function toast(message, error = false) {
@@ -367,7 +396,8 @@ async function api(path, options = {}) {
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) throw new Error("本机访问凭证已失效，请通过「拾聊」启动器重新打开。");
     const detail = data.error || data.message || data.detail;
-    throw new Error(localizeError(typeof detail === "string" ? detail : `HTTP ${response.status}`, data.code));
+    const localize = path.startsWith("/api/update/") ? localizeUpdateError : localizeError;
+    throw new Error(localize(typeof detail === "string" ? detail : `HTTP ${response.status}`, data.code));
   }
   return data;
 }
@@ -442,6 +472,12 @@ function renderArchiveTable(snapshots, compact = false) {
     const summary = element("div");
     const snapshotName = snapshot.name || `微信备份 ${formatDate(snapshot.created_at)}`;
     summary.append(element("div", "archive-title", snapshotName));
+    const kinds = element("div", "archive-kinds");
+    kinds.append(element("span", "badge badge-neutral", "原始备份"));
+    const readable = snapshot.readable_archive;
+    if (readable?.available) kinds.append(element("span", "badge badge-green", "可读归档已准备"));
+    else kinds.append(element("span", "archive-reading-note", "打开时整理聊天"));
+    summary.append(kinds);
     summary.append(element("div", "archive-detail", `${formatDate(snapshot.created_at)} · ${count(snapshot.file_count)} 个文件 · ZIP`));
     name.append(icon("archive", "archive-file-icon"), summary);
     nameCell.append(name);
@@ -460,7 +496,10 @@ function renderArchiveTable(snapshots, compact = false) {
     const reveal = actionButton("", "reveal", "icon-button", "folder", { id: snapshot.id });
     reveal.setAttribute("aria-label", `在 Finder 中显示 ${snapshotName}`);
     reveal.title = "在 Finder 中显示";
-    actions.append(details, verify, reveal);
+    const open = actionButton("打开聊天", "snapshot-open", "text-button archive-open", "chat", { id: snapshot.id });
+    open.setAttribute("aria-label", `打开 ${snapshotName} 的聊天`);
+    open.title = readable?.available ? "打开这份备份对应的可读归档" : "使用本机有效密钥整理这份原始备份";
+    actions.append(open, details, verify, reveal);
     actionsCell.append(actions);
     row.append(nameCell, size, status, actionsCell);
     body.append(row);
@@ -473,10 +512,22 @@ function renderJob(job) {
   for (const id of ["overview-job", "archives-job", "reader-job"]) {
     const panel = $(id);
     panel.replaceChildren();
-    panel.hidden = !job || !["running", "error"].includes(job.status);
+    const completedBackup = job?.type === "backup" && job.status === "done";
+    panel.hidden = !job || (!completedBackup && !["running", "error"].includes(job.status));
     if (panel.hidden) continue;
     panel.classList.toggle("job-error", job.status === "error");
     const top = element("div", "job-top");
+    if (completedBackup) {
+      top.append(element("strong", "", "原始备份已保存"));
+      const id = job.result?.id || job.result?.snapshot_id;
+      const snapshot = state.status?.snapshots?.find(item => item.id === id);
+      const readableReady = snapshot ? snapshot.readable_archive?.available : Boolean(job.result?.readable_archive?.path);
+      panel.append(top, element("p", "job-detail", readableReady
+        ? "可读归档也已准备好，可以直接打开聊天。"
+        : "可以打开这份原始备份，用本机有效密钥整理并阅读聊天。"));
+      if (id) panel.append(actionButton("打开聊天", "snapshot-open", "text-button job-open", "chat", { id }));
+      continue;
+    }
     if (job.status === "error") {
       top.append(element("strong", "", "上次操作未完成"));
       panel.append(top, element("p", "job-detail", localizeError(job.error, job.code)));
@@ -487,7 +538,8 @@ function renderJob(job) {
     const done = Number(progress.total_bytes) ? Number(progress.done_bytes) || 0 : Number(progress.done_files) || 0;
     const percent = total ? Math.min(100, Math.max(0, Math.round(done / total * 100))) : 0;
     const jobLabels = { verify: "正在校验归档完整性…", wechat_import: "正在整理聊天和媒体…", reader_export: "正在保存聊天与媒体归档…", reader_open: "正在打开压缩归档…", reader_import: "正在合并归档到本机…" };
-    top.append(element("strong", "", jobLabels[job.type] || "正在把对话好好收藏…"), element("span", "", total ? `${percent}%` : progress.media ? `已处理 ${count(done)} 条` : "准备中"));
+    const phaseLabels = { raw_extract: "正在校验并展开原始备份…", raw_import: "正在将原始备份整理为可读聊天…" };
+    top.append(element("strong", "", phaseLabels[progress.phase] || jobLabels[job.type] || "正在把对话好好收藏…"), element("span", "", total ? `${percent}%` : progress.media ? `已处理 ${count(done)} 条` : "准备中"));
     const track = element("div", "progress-track");
     track.setAttribute("role", "progressbar");
     track.setAttribute("aria-label", job.type === "verify" ? "校验进度" : ["wechat_import", "reader_export", "reader_open", "reader_import"].includes(job.type) ? "读取与归档进度" : "备份进度");
@@ -508,13 +560,112 @@ function renderJob(job) {
 
 function updateJobButtons() {
   const running = state.status?.job?.status === "running";
-  document.querySelectorAll('[data-action="backup"], [data-action="verify"], [data-action="read-wechat"], [data-action="reader-export"], [data-action="reader-import"], [data-action="reader-open"], [data-action="reader-live"]').forEach((button) => {
+  document.querySelectorAll('[data-action="backup"], [data-action="verify"], [data-action="snapshot-open"], [data-action="read-wechat"], [data-action="reader-export"], [data-action="reader-import"], [data-action="reader-open"], [data-action="reader-live"]').forEach((button) => {
     const canInspectExport = button.dataset.action === "reader-export" && state.status?.job?.type === "reader_export";
     const canInspectImport = button.dataset.action === "reader-import" && state.status?.job?.type === "reader_import";
     button.disabled = (running && !canInspectExport && !canInspectImport) || Boolean(button.dataset.loading);
-    if (running) button.title = "请等待当前任务完成";
-    else if (button.title === "请等待当前任务完成") button.removeAttribute("title");
+    if (running && button.title !== "请等待当前任务完成") {
+      button.dataset.idleTitle = button.getAttribute("title") || "";
+      button.title = "请等待当前任务完成";
+    } else if (!running && button.title === "请等待当前任务完成") {
+      if (button.dataset.idleTitle) button.title = button.dataset.idleTitle;
+      else button.removeAttribute("title");
+      delete button.dataset.idleTitle;
+    }
   });
+  renderUpdates();
+}
+
+function updateInProgress() {
+  return ["checking", "available", "downloading", "installing"].includes(state.updates?.status);
+}
+
+function renderUpdates(incoming) {
+  if (incoming && !state.updateBusy && !state.updateRestartPending) state.updates = incoming;
+  const updates = state.updates || {};
+  const supported = updates.supported === true;
+  const phase = state.updateRestartPending ? "installing" : state.updateBusy === "check" ? "checking" : updates.status || "idle";
+  const busy = Boolean(state.updateBusy);
+  const active = ["checking", "available", "downloading", "installing"].includes(phase);
+  const ready = phase === "ready";
+  const failed = phase === "error" || Boolean(state.updateError);
+  const jobRunning = state.status?.job?.status === "running";
+  const phaseNames = { idle: "待检查", checking: "检查中", available: "准备下载", downloading: "下载中", ready: "准备就绪", installing: "正在重启", error: "更新未完成" };
+  const badge = $("update-badge");
+  badge.textContent = !supported ? "暂不可用" : failed ? "更新未完成" : phaseNames[phase] || "待检查";
+  badge.className = `badge ${failed ? "badge-orange" : ready ? "badge-green" : "badge-neutral"}`;
+  $("update-current-version").textContent = updates.current_version || state.status?.version || "—";
+  $("update-latest-version").textContent = updates.latest_version || "检查后显示";
+  $("update-enabled").checked = state.updateBusy === "settings" ? state.updatePendingEnabled : Boolean(updates.enabled);
+  $("update-enabled").disabled = !supported || busy || phase === "installing";
+  const captions = {
+    idle: updates.latest_version ? "当前已是最新版本。" : "点击「检查更新」即可检查并准备可用版本。",
+    checking: "正在检查最新版本…",
+    available: "发现新版本，正在准备下载更新文件…",
+    downloading: "正在后台下载并验证更新。你可以继续阅读聊天。",
+    ready: jobRunning ? "更新已准备好，当前任务完成后即可重启安装。" : "更新已准备好。点击「重启并更新」安装，聊天与备份会保留。",
+    installing: "正在重启拾聊。新版本将重新打开窗口；如未打开，请从「应用程序」启动拾聊。",
+    error: "更新尚未完成，可以重试。当前版本仍可继续使用。",
+  };
+  $("update-status").textContent = !supported
+    ? updates.reason || "请从已安装的 M 系列拾聊应用启动，以使用软件更新。"
+    : captions[phase] || "正在读取更新状态…";
+  const error = state.updateError || updates.error;
+  $("update-error").hidden = !error;
+  $("update-error").textContent = error ? localizeUpdateError(typeof error === "string" ? error : "更新未完成，请重试。") : "";
+  const downloadBytes = Math.max(0, Number(updates.download_bytes) || 0);
+  const downloadedBytes = Math.max(0, Number(updates.downloaded_bytes) || 0);
+  const fullBytes = Math.max(0, Number(updates.full_bytes) || 0);
+  const hasTransfer = Boolean(updates.download_kind) && (downloadBytes || downloadedBytes || ready);
+  $("update-download").hidden = !supported || !hasTransfer;
+  $("update-download-kind").textContent = updates.download_kind === "delta" ? "增量下载" : "完整版本下载";
+  $("update-progress-text").textContent = ready ? "已下载并验证" : `${formatBytes(downloadedBytes)} / ${downloadBytes ? formatBytes(downloadBytes) : "大小待确认"}`;
+  const progress = $("update-progress");
+  if (downloadBytes) {
+    progress.max = downloadBytes;
+    progress.value = ready ? downloadBytes : Math.min(downloadBytes, downloadedBytes);
+  } else {
+    progress.max = 100;
+    if (ready) progress.value = 100;
+    else progress.removeAttribute("value");
+  }
+  $("update-download-size").textContent = updates.download_kind === "delta"
+    ? `本次增量下载 ${formatBytes(downloadBytes)}${fullBytes ? ` · 完整安装包 ${formatBytes(fullBytes)}` : ""}。下载后会验证并准备完整应用。`
+    : `本次下载 ${downloadBytes ? formatBytes(downloadBytes) : "大小待确认"}。当前安装内容不适合增量更新时，会下载完整版本。`;
+  $("update-check").disabled = !supported || busy || active;
+  $("update-check").setAttribute("aria-busy", String(state.updateBusy === "check"));
+  $("update-check-label").textContent = phase === "checking" ? "正在检查…" : failed ? "重试更新" : "检查更新";
+  $("update-install").hidden = !ready && phase !== "installing";
+  $("update-install").disabled = !supported || !ready || busy || jobRunning;
+  $("update-install").textContent = phase === "installing" ? "正在重启…" : "重启并更新";
+}
+
+async function changeUpdate(action) {
+  if (state.updateBusy || state.updateRestartPending) return;
+  const enabled = $("update-enabled").checked;
+  state.updatePendingEnabled = action === "settings" ? enabled : null;
+  state.updateBusy = action;
+  state.updateError = "";
+  state.updateRevision += 1;
+  renderUpdates();
+  try {
+    await api(`/api/update/${action === "settings" ? "settings" : action}`, {
+      method: "POST", body: action === "settings" ? { enabled } : {},
+    });
+    if (action === "install") {
+      state.updateRestartPending = true;
+      window.clearTimeout(state.polling);
+    } else {
+      state.updates = await api("/api/update/status");
+    }
+  } catch (error) {
+    state.updateError = error.message || "更新未完成，请重试。";
+  } finally {
+    state.updateBusy = "";
+    state.updateRevision += 1;
+    renderUpdates();
+    if (!state.updateRestartPending) refreshStatus({ silent: true });
+  }
 }
 
 function renderSources(sources) {
@@ -547,7 +698,7 @@ function fillSettings(config) {
   state.settingsDirty = false;
 }
 
-function renderStatus(status) {
+function renderStatus(status, acceptUpdates = true) {
   const config = status.config || {};
   const snapshots = [...(status.snapshots || [])].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   const totalBytes = snapshots.reduce((sum, snapshot) => sum + (Number(snapshot.archive_bytes) || 0), 0);
@@ -591,6 +742,7 @@ function renderStatus(status) {
   $("schedule-state").textContent = scheduleState;
   if (!state.settingsInitialized) fillSettings(config);
   renderSources(status.sources);
+  renderUpdates(acceptUpdates ? status.updates : undefined);
   renderJob(status.job);
   updateJobButtons();
   renderExportDialog();
@@ -652,8 +804,10 @@ function observeJob(job) {
 }
 
 async function refreshStatus({ silent = false } = {}) {
+  if (state.updateRestartPending) return;
   if (state.refreshing) { state.refreshAgain = true; return; }
   state.refreshing = true;
+  const updateRevision = state.updateRevision;
   try {
     const status = await api("/api/status");
     observeJob(status.job);
@@ -661,9 +815,10 @@ async function refreshStatus({ silent = false } = {}) {
       status.job.snapshotId = state.lastRunningJob.snapshotId;
     }
     state.status = status;
-    renderStatus(status);
+    renderStatus(status, updateRevision === state.updateRevision);
     $("connection-banner").hidden = true;
   } catch (error) {
+    if (state.updateRestartPending) return;
     $("connection-banner").hidden = false;
     $("connection-banner").textContent = error.message;
     if (!silent && state.status) toast(error.message, true);
@@ -674,9 +829,9 @@ async function refreshStatus({ silent = false } = {}) {
   } finally {
     state.refreshing = false;
     window.clearTimeout(state.polling);
-    const delay = state.refreshAgain ? 0 : state.status?.job?.status === "running" ? 3000 : 15000;
+    const delay = state.refreshAgain ? 0 : state.status?.job?.status === "running" || updateInProgress() ? 3000 : 15000;
     state.refreshAgain = false;
-    if (state.token) state.polling = window.setTimeout(() => refreshStatus({ silent: true }), delay);
+    if (state.token && !state.updateRestartPending) state.polling = window.setTimeout(() => refreshStatus({ silent: true }), delay);
   }
 }
 
@@ -713,6 +868,15 @@ async function revealSnapshot(id, button) {
   }, "打开中…");
 }
 
+async function openSnapshot(id, button) {
+  await withBusy(button, async () => {
+    const result = await api(`/api/snapshots/${encodeURIComponent(id)}/open`, { method: "POST", body: {} });
+    state.lastRunningJob = { id: result.job_id, type: "reader_open", status: "running" };
+    showPage("reader");
+    await refreshStatus({ silent: true });
+  }, "正在打开…");
+}
+
 async function showManifest(id, button) {
   await withBusy(button, async () => {
     const response = await api(`/api/snapshots/${encodeURIComponent(id)}`);
@@ -725,12 +889,12 @@ async function showManifest(id, button) {
     const verification = state.verificationResults.get(id) || manifest.verification || response.verification;
     const verificationText = verification?.ok === false || verification?.valid === false ? "校验异常" : verified ? "SHA-256 校验通过" : "可运行 SHA-256 完整性校验";
     const files = Array.isArray(manifest.files) ? manifest.files : [];
-    [["归档格式", "ZIP · 本机原始文件备份"], ["创建时间", formatDate(manifest.created_at || snapshot.created_at)], ["文件数量", `${count(manifest.file_count ?? snapshot.file_count ?? files.length)} 个`], ["完整性", verificationText], ["原始大小", formatBytes(manifest.original_bytes ?? snapshot.original_bytes)], ["归档大小", formatBytes(manifest.archive_bytes ?? snapshot.archive_bytes)]].forEach(([label, value]) => {
+    [["归档格式", "ZIP · 微信原始备份"], ["聊天阅读", snapshot.readable_archive?.available ? "已关联可读归档，可直接打开" : "使用本机有效密钥整理后阅读"], ["创建时间", formatDate(manifest.created_at || snapshot.created_at)], ["文件数量", `${count(manifest.file_count ?? snapshot.file_count ?? files.length)} 个`], ["完整性", verificationText], ["原始大小", formatBytes(manifest.original_bytes ?? snapshot.original_bytes)], ["归档大小", formatBytes(manifest.archive_bytes ?? snapshot.archive_bytes)]].forEach(([label, value]) => {
       const item = element("div");
       item.append(element("dt", "", label), element("dd", "", value));
       metadata.append(item);
     });
-    content.append(metadata);
+    content.append(metadata, actionButton("打开聊天", "snapshot-open", "text-button", "chat", { id }));
     if (verification?.errors?.length) content.append(element("p", "info-note", `校验发现异常：${verification.errors.join("；")}`));
     if (manifest.skipped_symlinks?.length) content.append(element("p", "info-note", `已跳过 ${count(manifest.skipped_symlinks.length)} 个符号链接；链接指向的外部文件不在本归档中。`));
     if (files.length) {
@@ -1253,7 +1417,7 @@ function renderReaderEmpty() {
   $("messages-header").hidden = true;
   $("message-context-bar").hidden = true;
   const hasConversations = Boolean(state.conversations.length);
-  $("message-list").replaceChildren(emptyState("chat", hasConversations ? "选一段对话，慢慢重温" : "聊天记录，妥善收藏", hasConversations ? "从左侧选择会话，查看聊天记录与媒体。这里是只读归档，不能发送消息。" : "点击顶部「导入」合并聊天归档或文字文件，也可以打开归档直接浏览。", hasConversations ? null : actionButton("导入聊天记录", "reader-import", "button button-outline", "upload")));
+  $("message-list").replaceChildren(emptyState("chat", hasConversations ? "选一段对话，慢慢重温" : "聊天记录，妥善收藏", hasConversations ? "从左侧选择会话，查看聊天记录与媒体。这里是只读归档，不能发送消息。" : "点击「导入」合并可读聊天，或「打开归档」浏览可读 ZIP；微信原始备份需本机有效密钥整理后阅读。", hasConversations ? null : actionButton("导入聊天记录", "reader-import", "button button-outline", "upload")));
 }
 
 function prepareConversation(id) {
@@ -1641,6 +1805,9 @@ function bindEvents() {
       verify: () => verifySnapshot(id, button),
       details: () => showManifest(id, button),
       reveal: () => revealSnapshot(id, button),
+      "snapshot-open": () => { $("manifest-dialog").close(); openSnapshot(id, button); },
+      "update-check": () => changeUpdate("check"),
+      "update-install": () => changeUpdate("install"),
       refresh: () => withBusy(button, () => refreshStatus(), "刷新中…"),
       "pick-source": () => pickFolder("source", button),
       "pick-destination": () => pickFolder("destination", button),
@@ -1691,6 +1858,7 @@ function bindEvents() {
   });
   document.querySelector(".brand").addEventListener("click", (event) => { event.preventDefault(); showPage("overview"); });
   $("settings-form").addEventListener("submit", saveSettings);
+  $("update-enabled").addEventListener("change", () => changeUpdate("settings"));
   $("reader-import-dialog").addEventListener("close", () => {
     state.importTrigger?.focus({ preventScroll: true });
   });

@@ -283,6 +283,15 @@ def run_smoke(bundle):
 
             current = "native_startup"
             state = workspace / "state"
+            # Disable background update networking before the native app starts.
+            synthetic_source = workspace / "synthetic-source"
+            synthetic_source.mkdir(mode=0o700)
+            config = {"source": str(synthetic_source), "destination": str(workspace / "backups"),
+                      "schedule_enabled": False, "schedule_time": "03:00", "interval": "daily",
+                      "include_media": True, "timezone": "Asia/Shanghai", "auto_update_enabled": False}
+            config_path = state / "config.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            config_path.chmod(0o600)
             server = subprocess.Popen([str(launcher), "--no-browser", "--state-dir", str(state), "--port", "0"],
                                       cwd=workspace, env=environment, stdin=subprocess.DEVNULL,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -293,7 +302,9 @@ def run_smoke(bundle):
                     candidate = json.loads((state / "runtime.json").read_text())
                     _require(candidate["pid"] == server.pid, current)
                     raw, _ = _request(candidate, "/api/config")
-                    _require(json.loads(raw)["schedule_enabled"] is False, current)
+                    active_config = json.loads(raw)
+                    _require(active_config["schedule_enabled"] is False
+                             and active_config["auto_update_enabled"] is False, current)
                     runtime = candidate
                     break
                 except (OSError, ValueError, KeyError, URLError):
@@ -306,6 +317,7 @@ def run_smoke(bundle):
             status = json.loads(raw)
             _require(status["version"] == original_info["CFBundleShortVersionString"], current)
             _require(status["library"]["messages"] == 2 and status["config"]["schedule_enabled"] is False, current)
+            _require(status["config"]["auto_update_enabled"] is False, current)
             _require(status["wechat_reader"]["configured"] is False, current)
             checks[current] = True
 

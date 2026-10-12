@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -90,7 +91,7 @@ def default_config():
     return {"source": sources[0]["path"] if sources else "",
             "destination": str(Path.home() / "Documents/拾聊备份"),
             "schedule_enabled": False, "schedule_time": "03:00", "interval": "daily",
-            "include_media": True, "timezone": "Asia/Shanghai"}
+            "include_media": True, "timezone": "Asia/Shanghai", "auto_update_enabled": True}
 
 
 def schedule_due(config, last_success, current=None):
@@ -147,6 +148,11 @@ class Application:
         self.settings_lock = threading.Lock()
         self.operation_local = threading.local()
         self.token = secrets.token_urlsafe(32)
+        self.update_lock = threading.Lock()
+        self.update_stop = threading.Event()
+        self.installing_update = False
+        from vault.updater import Updater
+        self.updater = Updater(self.state_dir)
 
     @contextmanager
     def operation_lock(self):
@@ -158,7 +164,7 @@ class Application:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise OperationBusy("另一项备份或导入正在进行，请等待完成后再试。") from None
+                raise OperationBusy("另一项备份、整理或更新正在进行，请等待完成后再试。") from None
             self.operation_local.active = True
             try:
                 yield
@@ -172,6 +178,65 @@ class Application:
         if not isinstance(config, dict):
             raise ValueError("Settings file is invalid")
         return config
+
+    def update_status(self):
+        return {**self.updater.status(), "enabled": self.config().get("auto_update_enabled", True)}
+
+    def save_update_settings(self, enabled):
+        if type(enabled) is not bool:
+            raise ValueError("自动更新设置必须是开或关。")
+        with self.settings_lock:
+            config = self.config()
+            config["auto_update_enabled"] = enabled
+            write_json(self.config_path, config)
+        if enabled:
+            self.check_updates()
+        return self.update_status()
+
+    def check_updates(self):
+        current = self.updater.status()
+        if not current.get("supported") or current.get("status") in {"ready", "installing"}:
+            return self.update_status()
+        if not self.update_lock.acquire(blocking=False):
+            return self.update_status()
+
+        def worker():
+            try:
+                with self.operation_lock():
+                    self.updater.check()
+                    if self.updater.status().get("status") == "available":
+                        self.updater.download()
+            except OperationBusy:
+                pass
+            except (ValueError, OSError, RuntimeError):
+                # Updater records a public, credential-free error in its status.
+                pass
+            finally:
+                self.update_lock.release()
+
+        threading.Thread(target=worker, daemon=True, name="update-worker").start()
+        return self.update_status()
+
+    def start_updates(self):
+        """Run only in an interactive server, never in scheduled backup jobs."""
+        def monitor():
+            while not self.update_stop.is_set():
+                try:
+                    if self.config().get("auto_update_enabled", True):
+                        self.check_updates()
+                except (ValueError, OSError, RuntimeError):
+                    pass
+                self.update_stop.wait(12 * 60 * 60)
+        threading.Thread(target=monitor, daemon=True, name="update-monitor").start()
+
+    def install_update(self):
+        with self.job_lock:
+            if self.installing_update or (self.job and self.job["status"] == "running"):
+                raise OperationBusy("请等待当前备份或整理完成后再重启更新。")
+            self.updater.launch_install(os.getpid())
+            self.installing_update = True
+            self.update_stop.set()
+        return {"ok": True, "status": "installing"}
 
     @property
     def reader_library(self):
@@ -310,7 +375,64 @@ class Application:
 
     def snapshots(self, config=None):
         config = config or self.config()
-        return self.engine.list_snapshots(config["destination"])
+        snapshots = self.engine.list_snapshots(config["destination"])
+        for snapshot in snapshots:
+            linked = self.linked_readable(snapshot["path"])
+            if linked:
+                snapshot["readable_archive"] = {"path": str(linked), "name": linked.name, "available": True}
+        return snapshots
+
+    @staticmethod
+    def archive_signature(path):
+        from vault.media_store import signature
+        value = Path(path).lstat()
+        if not stat.S_ISREG(value.st_mode):
+            raise ValueError("请选择普通 ZIP 文件。")
+        return list(signature(value))
+
+    def link_readable(self, raw_path, readable_path):
+        """Associate only archives produced by one successful backup job."""
+        path = self.state_dir / "readable-backups.json"
+        links = read_json(path, {})
+        if not isinstance(links, dict):
+            links = {}
+        links[str(Path(raw_path).absolute())] = {
+            "raw_signature": self.archive_signature(raw_path),
+            "path": str(Path(readable_path).absolute()),
+            "signature": self.archive_signature(readable_path),
+        }
+        write_json(path, dict(list(links.items())[-1000:]))
+
+    def linked_readable(self, raw_path):
+        try:
+            links = read_json(self.state_dir / "readable-backups.json", {})
+            link = links.get(str(Path(raw_path).absolute()))
+            if (isinstance(link, dict) and link["raw_signature"] == self.archive_signature(raw_path)
+                    and link["signature"] == self.archive_signature(link["path"])):
+                return Path(link["path"])
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            pass
+        return None
+
+    @serialized_operation
+    def open_reader_archive(self, archive_path, progress=None):
+        from vault.raw_archive import inspect_archive, open_raw_archive
+        from vault.readable_archive import open_archive
+        info = inspect_archive(archive_path)
+        linked = self.linked_readable(archive_path) if info["format"] == "raw" else None
+        if linked:
+            opened = open_archive(linked, self.state_dir)
+        elif info["format"] == "raw":
+            opened = open_raw_archive(archive_path, self.state_dir, progress,
+                                      expected_signature=info["signature"])
+        else:
+            opened = open_archive(archive_path, self.state_dir)
+        with self.job_lock:
+            self.archive_library = opened
+            self.reader_source = {"archived": True, "name": Path(archive_path).name, "format": info["format"]}
+            self.reader_generation = secrets.token_hex(16)
+        return {**opened.stats(), "format": info["format"], "linked_readable": bool(linked),
+                "cache_hit": bool(getattr(opened, "raw_cache_hit", False))}
 
     def status(self):
         config = self.config()
@@ -322,6 +444,7 @@ class Application:
                 "media": self.reader_library.media.stats(), "reader_source": self.reader_source,
                 "wechat_reader": key_status(self.state_dir),
                 "wechat_running": wechat_running(),
+                "updates": self.update_status(),
                 "last_scheduled_result": read_json(self.state_dir / "schedule-result.json", None)}
 
     def record_success(self, config, result):
@@ -362,6 +485,8 @@ class Application:
             try:
                 from vault.readable_archive import create_archive
                 result["readable_archive"] = create_archive(self.library, config["destination"], progress)
+                if result.get("reader") is not None and not result.get("reader_error"):
+                    self.link_readable(result["path"], result["readable_archive"]["path"])
             except Exception:
                 result["reader_error"] = "原始备份已保存，可读压缩归档未能生成，请重试保存可读归档。"
         return result
@@ -372,6 +497,8 @@ class Application:
                               if kind == "reader_export" else None)
         import_selection = self.checked_import(archive_path, preview_id) if kind == "reader_import" else None
         with self.job_lock:
+            if self.installing_update:
+                raise OperationBusy("应用正在重启更新，请稍后重新打开。")
             if self.job and self.job["status"] == "running":
                 raise ValueError("Another operation is already running")
             export_library = self.reader_library
@@ -411,13 +538,7 @@ class Application:
                     with self.job_lock:
                         self.completed_exports[result["path"]] = signature(Path(result["path"]).lstat())
                 elif kind == "reader_open":
-                    from vault.readable_archive import open_archive
-                    opened = open_archive(archive_path, self.state_dir)
-                    with self.job_lock:
-                        self.archive_library = opened
-                        self.reader_source = {"archived": True, "name": Path(archive_path).name}
-                        self.reader_generation = secrets.token_hex(16)
-                    result = opened.stats()
+                    result = self.open_reader_archive(archive_path, progress)
                 else:
                     result = self.engine.verify(snapshot_id, config["destination"])
                     if not result.get("ok"):
@@ -599,6 +720,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.response(self.app.status())
             if parsed.path == "/api/config":
                 return self.response(self.app.config())
+            if parsed.path == "/api/update/status":
+                return self.response(self.app.update_status())
             if parsed.path == "/api/reader/export-info":
                 return self.response(self.app.export_info())
             if parsed.path == "/api/conversations":
@@ -644,6 +767,18 @@ class Handler(BaseHTTPRequestHandler):
             body = self.body()
             if path == "/api/config":
                 return self.response(self.app.save_config(body))
+            if path == "/api/update/settings":
+                return self.response(self.app.save_update_settings(body.get("enabled")))
+            if path == "/api/update/check":
+                return self.response(self.app.check_updates(), 202)
+            if path == "/api/update/install":
+                result = self.app.install_update()
+                self.response(result, 202)
+                def shutdown():
+                    time.sleep(0.3)
+                    self.server.shutdown()
+                threading.Thread(target=shutdown, daemon=True, name="update-shutdown").start()
+                return
             if path == "/api/backup":
                 return self.response(self.app.start_job("backup"), 202)
             if path == "/api/wechat/import":
@@ -661,7 +796,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/reader/archive":
                 archive_path = body.get("path")
                 if not isinstance(archive_path, str) or not Path(archive_path).is_absolute():
-                    raise ValueError("请选择本机的可读压缩归档。")
+                    raise ValueError("请选择本机的拾聊原始备份或可读 ZIP 归档。")
                 return self.response(self.app.start_job("reader_open", archive_path=archive_path), 202)
             if path == "/api/reader/live":
                 self.app.use_local_reader()
@@ -669,7 +804,7 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/pick-archive", "/api/pick-import-archive"}:
                 if sys.platform != "darwin":
                     raise ValueError("File selection is only available on macOS")
-                prompt = "选择要导入本机的拾聊可读 ZIP 归档" if path == "/api/pick-import-archive" else "选择拾聊可读压缩归档"
+                prompt = "选择要导入本机的拾聊可读 ZIP 归档" if path == "/api/pick-import-archive" else "选择拾聊原始备份或可读 ZIP 归档"
                 chosen = subprocess.run(["/usr/bin/osascript", "-e",
                     f'POSIX path of (choose file with prompt "{prompt}" of type {{"zip"}})'],
                     capture_output=True, text=True, timeout=120)
@@ -689,7 +824,7 @@ class Handler(BaseHTTPRequestHandler):
                 if result.returncode:
                     return self.response({"path": None, "cancelled": True})
                 return self.response({"path": result.stdout.strip()})
-            match = re.fullmatch(r"/api/snapshots/([a-zA-Z0-9_.-]+)/(verify|reveal)", path)
+            match = re.fullmatch(r"/api/snapshots/([a-zA-Z0-9_.-]+)/(verify|reveal|open)", path)
             if match:
                 snapshot_id, action = match.groups()
                 if action == "verify":
@@ -697,6 +832,8 @@ class Handler(BaseHTTPRequestHandler):
                 snapshot = next((item for item in self.app.snapshots() if item["id"] == snapshot_id), None)
                 if not snapshot:
                     raise KeyError("Snapshot not found")
+                if action == "open":
+                    return self.response(self.app.start_job("reader_open", archive_path=snapshot["path"]), 202)
                 subprocess.run(["/usr/bin/open", "-R", snapshot["path"]], check=True, timeout=15, capture_output=True)
                 return self.response({"ok": True})
             self.response({"error": "Not found"}, 404)
@@ -728,6 +865,16 @@ def main():
             webbrowser.open(runtime["url"])
         print("Shiliao is already running.")
         return 0
+    if (application.config().get("auto_update_enabled", True)
+            and application.updater.status().get("status") == "ready"
+            and application.updater.status().get("supported")):
+        try:
+            application.install_update()
+        except (ValueError, OSError, RuntimeError):
+            pass
+        else:
+            lock.close()
+            return 0
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     server.app = application
     url = f"http://127.0.0.1:{server.server_port}/#token={application.token}"
@@ -735,11 +882,13 @@ def main():
     print(f"Shiliao is listening on 127.0.0.1:{server.server_port}", flush=True)
     if not args.no_browser:
         webbrowser.open(url)
+    application.start_updates()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        application.update_stop.set()
         server.server_close()
         (application.state_dir / "runtime.json").unlink(missing_ok=True)
         lock.close()

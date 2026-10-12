@@ -29,7 +29,9 @@
 
 固定 wheel 的补充材料覆盖 `zstandard 0.23.0` 内的 zstd 1.5.6、`pilk 0.2.4` 内的 SILK SDK 声明，以及 `cryptography 44.0.2` 内的 OpenSSL 3.4.1 和固定 `Cargo.lock` 对应的 17 项 macOS 运行时 Rust 依赖许可。材料及其来源 URL、来源摘要、归档成员路径和文件摘要保存在应用的 `Contents/Resources/python/licenses/wheels/`，并复制到第三方源码 ZIP 的 `third-party-sources/wheel-licenses/`；这些补充材料不替代 Python 包原有的许可文件。
 
-`arm64` 安装产物附带构建清单、SHA-256 校验文件和 `shiliao-0.7.0-macos-arm64-third-party-sources.zip` 源码材料包。维护者发布时必须一并保留相关源码、许可和构建说明，确保它们与实际二进制版本对应。应用的 `Contents/Resources/THIRD_PARTY_NOTICES.md` 和 `DEPENDENCIES.json` 说明依赖；各 Python 包的许可保存在 `Contents/Resources/python/` 对应位置，工具许可位于 `Contents/Resources/tools/licenses/`。Python 运行时及其原生依赖另保留 `Contents/Resources/licenses/python-build-standalone/`，其中包含原始 `PYTHON.json`、`LICENSES.json` 和 `licenses/` 许可全文；第三方源码 ZIP 的 `third-party-sources/python-build-standalone/` 保留同一套材料。安装包中的许可文件和源码材料是本说明的组成部分；具体内容以实际构建输出为准。不要将“源码已公开”或提供上游链接视作可以省略所分发组件对应材料的理由。
+v0.8 的自动更新使用已有 `cryptography` 依赖验证 Ed25519 发布签名，没有新增第三方更新框架。文件增量包只是应用分发方式：重建后的完整应用仍须包含上述许可材料，每个新版本仍提供对应的第三方源码材料包。增量省略未变化文件不改变这些组件的许可义务。
+
+`arm64` 安装产物附带构建清单、SHA-256 校验文件和 `shiliao-0.8.0-macos-arm64-third-party-sources.zip` 源码材料包。维护者发布时必须一并保留相关源码、许可和构建说明，确保它们与实际二进制版本对应。应用的 `Contents/Resources/THIRD_PARTY_NOTICES.md` 和 `DEPENDENCIES.json` 说明依赖；各 Python 包的许可保存在 `Contents/Resources/python/` 对应位置，工具许可位于 `Contents/Resources/tools/licenses/`。Python 运行时及其原生依赖另保留 `Contents/Resources/licenses/python-build-standalone/`，其中包含原始 `PYTHON.json`、`LICENSES.json` 和 `licenses/` 许可全文；第三方源码 ZIP 的 `third-party-sources/python-build-standalone/` 保留同一套材料。安装包中的许可文件和源码材料是本说明的组成部分；具体内容以实际构建输出为准。不要将“源码已公开”或提供上游链接视作可以省略所分发组件对应材料的理由。
 
 该固定 PBS 版本的 macOS 元数据还引用了未随归档分发的 zlib-ng，其实际链接仅使用 Apple 系统 zlib。`LICENSES.json` 将这项系统引用及省略原因单独列出，不把缺失文件算作已提供的许可；其他随包组件的许可仍须完整保留。
 
@@ -41,7 +43,7 @@
 | --- | --- | --- |
 | Python | 运行应用和合成测试 | [Python 许可](https://docs.python.org/3/license.html) |
 | python-build-standalone | 可重新分发的 Python 运行时 | [项目与许可说明](https://github.com/astral-sh/python-build-standalone)，并保留发行包内各依赖许可 |
-| cryptography | 图片解密及密码学合成测试 | [许可证说明](https://cryptography.io/en/latest/licenses/) |
+| cryptography | 图片解密、更新签名校验及密码学合成测试 | [许可证说明](https://cryptography.io/en/latest/licenses/) |
 | Pillow | 图片识别与完整性验证 | [许可文件](https://github.com/python-pillow/Pillow/blob/main/LICENSE) |
 | python-zstandard | 微信消息正文解压 | [许可文件](https://github.com/indygreg/python-zstandard/blob/main/LICENSE) |
 | pilk | 本机 SILK 解码 | [GPL-3.0 许可文件](https://github.com/foyoux/pilk/blob/main/LICENSE) |

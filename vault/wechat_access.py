@@ -93,13 +93,17 @@ def key_status(state_dir):
         return {"configured": False, "key_count": 0, "error": "本机密钥文件无法读取，请重新导入。"}
 
 
-def import_account(source, state_dir, library, assert_closed, progress=None):
+def import_account(source, state_dir, library, assert_closed, progress=None, *,
+                   account_id=None, include_missing_media=False):
     from vault.wechat_reader import import_decrypted
     assert_closed()
     if progress:
         progress({"done_files": 0, "total_files": 0,
                   "current_file": "正在访问微信数据；如 macOS 弹出访问其他 App 数据的提示，请选择允许。"})
     root = database_root(source)
+    identity = str(root) if account_id is None else account_id
+    if not isinstance(identity, str) or not identity:
+        raise ValueError("账号来源标识无效。")
     key_path = Path(state_dir) / "wechat-keys.json"
     if not key_path.exists():
         raise ValueError("尚未配置本机数据库密钥，请先完成一次本地读取初始化。")
@@ -168,11 +172,11 @@ def import_account(source, state_dir, library, assert_closed, progress=None):
         if progress:
             progress({"done_files": len(selected), "total_files": len(selected), "snapshot_ready": True,
                       "current_file": "聊天快照已完成，可以重新打开微信；媒体仍在整理，请暂勿清理微信文件。"})
-        result = import_decrypted(decrypted_root, library, account_id=str(root), progress=progress)
+        result = import_decrypted(decrypted_root, library, account_id=identity, progress=progress)
         if avatar_available:
             from vault.wechat_avatars import import_avatars
-            result["avatars"] = import_avatars(decrypted_root, library, str(root), progress)
-        if auxiliary:
+            result["avatars"] = import_avatars(decrypted_root, library, identity, progress)
+        if auxiliary or include_missing_media:
             from vault.media_import import import_media
-            result["media"] = import_media(decrypted_root, root.parent, library, str(root), progress)
+            result["media"] = import_media(decrypted_root, root.parent, library, identity, progress)
         return result

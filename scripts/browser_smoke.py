@@ -55,10 +55,11 @@ def serve_fixture(state: Path) -> None:
     app.Scheduler.status = lambda self: {"installed": False, "loaded": False, "error": None}
     app.Scheduler.install = blocked
     app.Scheduler.uninstall = blocked
+    app.Application.start_updates = lambda self: None
     original_post = app.Handler.do_POST
 
     def fixture_post(handler):
-        if urlsplit(handler.path).path in {"/api/pick-folder", "/api/pick-archive", "/api/pick-import-archive", "/api/wechat/import", "/api/wechat/keys", "/api/reader/export/reveal"}:
+        if urlsplit(handler.path).path in {"/api/pick-folder", "/api/pick-archive", "/api/pick-import-archive", "/api/wechat/import", "/api/wechat/keys", "/api/reader/export/reveal", "/api/update/check", "/api/update/settings", "/api/update/install"}:
             return handler.response({"error": "System actions are disabled in browser fixtures"}, 405)
         return original_post(handler)
 
@@ -1070,6 +1071,212 @@ def check_mobile_width(page, name: str) -> dict:
             "viewport_width": dimensions["viewport"]}
 
 
+def check_update_settings(page, config_path: Path, artifacts: Path, checks: list) -> None:
+    """Exercise update UI with same-origin synthetic responses, never a real updater."""
+    saved_config = config_path.read_bytes()
+    updates = {"supported": True, "enabled": True, "current_version": "0.7.0", "status": "idle",
+               "latest_version": None, "download_kind": None, "download_bytes": 0,
+               "downloaded_bytes": 0, "full_bytes": 0, "error": None}
+    fixture = {"hold_check": True, "pending": [], "calls": [], "busy_job": False, "fail_setting": False}
+
+    def status_response(route):
+        response = route.fetch()
+        payload = response.json()
+        payload["updates"] = dict(updates)
+        if fixture["busy_job"]:
+            payload["job"] = {"id": "synthetic-update-busy", "type": "reader_open", "status": "running", "progress": {}}
+        route.fulfill(response=response, json=payload)
+
+    def update_response(route):
+        request = route.request
+        path = urlsplit(request.url).path
+        assert request.headers.get("authorization", "").startswith("Bearer "), "The update API was not authenticated"
+        if path == "/api/update/status":
+            route.fulfill(json=updates)
+            return
+        fixture["calls"].append(path)
+        if path.endswith("/settings"):
+            if fixture["fail_setting"]:
+                route.fulfill(status=500, json={"error": "合成测试：设置未保存，请重试。"})
+                return
+            assert set(request.post_data_json) == {"enabled"}
+            updates["enabled"] = request.post_data_json["enabled"]
+        elif path.endswith("/check"):
+            updates.update(status="downloading", latest_version="0.8.0", download_kind="delta",
+                           download_bytes=8 * 1024 ** 2, downloaded_bytes=2 * 1024 ** 2,
+                           full_bytes=80 * 1024 ** 2, error=None)
+            if fixture["hold_check"]:
+                fixture["pending"].append(route)
+                return
+        elif path.endswith("/install"):
+            assert request.post_data_json == {}
+        else:
+            raise AssertionError("Unexpected synthetic update endpoint")
+        route.fulfill(json={"ok": True})
+
+    def refresh():
+        page.evaluate("() => refreshStatus({silent: true})")
+
+    page.route("**/api/status", status_response)
+    page.route("**/api/update/*", update_response)
+    try:
+        refresh()
+        expect(page.locator("#update-enabled")).to_be_checked()
+        expect(page.locator("#update-current-version")).to_have_text("0.7.0")
+        page.locator("#update-enabled").uncheck()
+        expect(page.locator("#update-enabled")).not_to_be_checked()
+        expect(page.locator("#update-enabled")).to_be_enabled()
+        assert updates["enabled"] is False
+        fixture["fail_setting"] = True
+        page.locator("#update-enabled").check()
+        expect(page.locator("#update-error")).to_contain_text("设置未保存")
+        expect(page.locator("#update-enabled")).not_to_be_checked()
+        fixture["fail_setting"] = False
+        page.locator("#update-enabled").check()
+        expect(page.locator("#update-enabled")).to_be_checked()
+        expect(page.locator("#update-error")).to_be_hidden()
+        assert config_path.read_bytes() == saved_config, "Update settings changed the backup configuration"
+        checks.append("update_setting_saves_immediately_and_failure_restores_previous_value")
+
+        page.locator("#update-check").click()
+        expect(page.locator("#update-badge")).to_have_text("检查中")
+        expect(page.locator("#update-check")).to_be_disabled()
+        assert fixture["pending"]
+        fixture["pending"].pop().fulfill(json={"ok": True})
+        expect(page.locator("#update-download-kind")).to_have_text("增量下载")
+        expect(page.locator("#update-progress-text")).to_have_text("2 MB / 8 MB")
+        expect(page.locator("#update-download-size")).to_contain_text("本次增量下载 8 MB · 完整安装包 80 MB")
+        assert page.locator("#update-progress").evaluate("node => [node.value, node.max]") == [2 * 1024 ** 2, 8 * 1024 ** 2]
+        expect(page.locator("#update-install")).to_be_hidden()
+        page.locator("#update-card").screenshot(path=str(artifacts / "updates-desktop.png"))
+        checks.append("update_check_loading_and_actual_delta_download_progress_are_visible")
+
+        updates.update(status="error", error='合成校验失败 <img src="https://invalid.example/x">')
+        refresh()
+        expect(page.locator("#update-error")).to_contain_text("合成校验失败 <img")
+        assert page.locator("#update-card img").count() == 0
+        expect(page.locator("#update-check-label")).to_have_text("重试更新")
+        updates["error"] = "invalid_update_signature"
+        refresh()
+        expect(page.locator("#update-error")).to_contain_text("更新签名验证未通过")
+        updates["error"] = "update_failed"
+        refresh()
+        expect(page.locator("#update-error")).to_contain_text("检查网络连接和可用磁盘空间")
+        checks.append("update_integrity_and_network_error_codes_have_actionable_chinese_messages")
+        fixture["hold_check"] = False
+        page.locator("#update-check").click()
+        expect(page.locator("#update-error")).to_be_hidden()
+        updates.update(download_kind="full", download_bytes=80 * 1024 ** 2, downloaded_bytes=16 * 1024 ** 2)
+        refresh()
+        expect(page.locator("#update-download-kind")).to_have_text("完整版本下载")
+        expect(page.locator("#update-progress-text")).to_have_text("16 MB / 80 MB")
+        checks.append("update_failure_is_literal_text_and_retry_full_download_remains_available")
+
+        updates.update(status="ready", downloaded_bytes=80 * 1024 ** 2)
+        fixture["busy_job"] = True
+        refresh()
+        expect(page.locator("#update-install")).to_be_visible()
+        expect(page.locator("#update-install")).to_be_disabled()
+        expect(page.locator("#update-status")).to_contain_text("当前任务完成后")
+        fixture["busy_job"] = False
+        refresh()
+        expect(page.locator("#update-install")).to_be_enabled()
+        page.set_viewport_size({"width": 400, "height": 900})
+        assert page.evaluate("document.documentElement.scrollWidth") == 400
+        assert page.locator("#update-card").evaluate("node => node.scrollWidth <= node.clientWidth")
+        page.locator("#update-card").scroll_into_view_if_needed()
+        page.screenshot(path=str(artifacts / "updates-mobile.png"), full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 1000})
+        checks.append("ready_update_waits_for_archive_jobs_and_fits_400px")
+
+        page.locator("#update-install").click()
+        expect(page.locator("#update-status")).to_contain_text("正在重启拾聊")
+        expect(page.locator("#update-install")).to_be_disabled()
+        expect(page.locator("#connection-banner")).to_be_hidden()
+        assert fixture["calls"].count("/api/update/install") == 1
+        assert page.evaluate("() => state.updateRestartPending") is True
+        checks.append("update_install_is_explicit_and_old_window_stops_polling")
+    finally:
+        for route in fixture["pending"]:
+            route.fulfill(json={"ok": True})
+        page.unroute("**/api/status", status_response)
+        page.unroute("**/api/update/*", update_response)
+        page.reload(wait_until="domcontentloaded")
+        expect(page.locator("#connection-banner")).to_be_hidden()
+
+
+def check_backup_reading_entry(page, snapshot: dict, checks: list) -> None:
+    """Verify raw/readable routing and progress without reading encrypted personal data."""
+    fixture = {"job": None, "readable": False, "calls": []}
+
+    def status_response(route):
+        response = route.fetch()
+        payload = response.json()
+        if fixture["job"]:
+            payload["job"] = fixture["job"]
+        for item in payload.get("snapshots", []):
+            if item["id"] == snapshot["id"]:
+                if fixture["readable"]:
+                    item["readable_archive"] = {"path": str(Path(snapshot["path"]).with_name("readable-synthetic.zip")),
+                                                "name": "readable-synthetic.zip", "available": True}
+                else:
+                    item.pop("readable_archive", None)
+        route.fulfill(response=response, json=payload)
+
+    def start_open(route):
+        path = urlsplit(route.request.url).path
+        fixture["calls"].append(path)
+        assert route.request.headers.get("authorization", "").startswith("Bearer ")
+        if path.endswith("/open"):
+            assert route.request.post_data_json == {}
+        else:
+            assert route.request.post_data_json == {"path": snapshot["path"]}
+        fixture["job"] = {"id": "synthetic-raw-reader", "type": "reader_open", "status": "running",
+                          "progress": {"phase": "raw_extract", "done_files": 1, "total_files": 2,
+                                       "done_bytes": 1024, "total_bytes": 2048, "current_file": "正在读取原始备份文件"}}
+        route.fulfill(status=202, json={"job_id": fixture["job"]["id"]})
+
+    page.route("**/api/status", status_response)
+    page.route("**/api/snapshots/*/open", start_open)
+    page.route("**/api/reader/archive", start_open)
+    page.route("**/api/pick-archive", lambda route: route.fulfill(json={"path": snapshot["path"]}))
+    try:
+        page.evaluate("() => refreshStatus({silent: true})")
+        go_to(page, "archives")
+        expect(page.locator("#all-archives .archive-kinds")).to_contain_text("原始备份")
+        expect(page.locator("#all-archives .archive-kinds")).to_contain_text("打开时整理聊天")
+        page.locator('#all-archives [data-action="snapshot-open"]').click()
+        expect(page.locator("#page-reader")).to_be_visible()
+        expect(page.locator("#reader-job")).to_contain_text("正在校验并展开原始备份")
+        fixture["job"]["progress"].update(phase="raw_import", current_file="正在整理聊天与媒体")
+        page.evaluate("() => refreshStatus({silent: true})")
+        expect(page.locator("#reader-job")).to_contain_text("正在将原始备份整理为可读聊天")
+        fixture["job"].update(status="error", code="raw_keys_missing", error="这份原始备份需要有效密钥，请先导入匹配的密钥文件，再重新打开。")
+        page.evaluate("() => refreshStatus({silent: true})")
+        expect(page.locator("#reader-job")).to_contain_text("需要有效密钥")
+        expect(page.locator('[data-action="reader-open"]')).to_be_enabled()
+        checks.append("raw_backup_has_open_chat_entry_and_reports_conversion_phases_and_missing_keys")
+
+        fixture["readable"] = True
+        fixture["job"] = None
+        page.evaluate("() => refreshStatus({silent: true})")
+        go_to(page, "archives")
+        expect(page.locator("#all-archives .archive-kinds")).to_contain_text("可读归档已准备")
+        expect(page.locator('#all-archives [data-action="snapshot-open"]')).to_have_attribute("title", "打开这份备份对应的可读归档")
+        go_to(page, "reader")
+        expect(page.locator('[data-action="reader-open"]')).to_have_attribute("title", "打开拾聊可读归档或微信原始备份 ZIP")
+        page.locator('[data-action="reader-open"]').click()
+        expect(page.locator("#reader-job")).to_contain_text("正在校验并展开原始备份")
+        assert fixture["calls"] == [f"/api/snapshots/{snapshot['id']}/open", "/api/reader/archive"]
+        checks.append("linked_readable_archive_is_labeled_and_reader_picker_accepts_raw_backup_path")
+    finally:
+        page.unroute("**/api/status", status_response)
+        page.unroute("**/api/snapshots/*/open", start_open)
+        page.unroute("**/api/reader/archive", start_open)
+        page.unroute("**/api/pick-archive")
+        page.evaluate("() => refreshStatus({silent: true})")
+
+
 def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
     if chrome is not None and not chrome.is_file():
         raise FileNotFoundError("The requested browser executable was not found.")
@@ -1220,6 +1427,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     assert saved["schedule_time"] == "22:15", "The time setting was not saved."
                     assert saved["schedule_enabled"] is False, "Scheduling must remain disabled."
                     checks.append("settings_save_with_schedule_disabled")
+                    check_update_settings(page, config_path, artifacts, checks)
 
                     go_to(page, "overview")
                     with page.expect_response(lambda response: urlsplit(response.url).path == "/api/backup") as backup_response:
@@ -1230,6 +1438,8 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     assert Path(snapshot["path"]).is_file(), "The ZIP archive was not published."
                     expect(page.locator("#stat-snapshots")).to_have_text("1")
                     checks.append("synthetic_source_zip_backup")
+                    expect(page.locator('#overview-job [data-action="snapshot-open"]')).to_be_visible()
+                    checks.append("completed_backup_offers_open_chat_action")
 
                     go_to(page, "archives")
                     with page.expect_response(lambda response: urlsplit(response.url).path.endswith("/verify")) as verify_response:
@@ -1239,6 +1449,7 @@ def run_smoke(chrome: Path | None, artifacts: Path) -> dict:
                     assert verification["ok"] is True, "The archive failed content verification."
                     assert verification["checked_files"] == 2, "Verification did not cover both files."
                     checks.append("zip_sha256_verification")
+                    check_backup_reading_entry(page, snapshot, checks)
 
                     go_to(page, "reader")
                     open_management(page)

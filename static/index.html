@@ -54,7 +54,7 @@
 
       <section class="page" id="page-archives" aria-labelledby="archives-heading" hidden>
         <div class="page-heading"><div><p class="eyebrow">YOUR CONVERSATION TIME CAPSULES</p><h1 id="archives-heading">备份档案<span class="heading-dot">.</span></h1><p class="page-subtitle">按时间收藏微信原始文件，每一份都可以校验和定位。</p></div><button class="button button-dark" data-action="backup"><span class="icon" data-icon="plus"></span>新建备份</button></div>
-        <div class="info-note"><span class="icon" data-icon="info"></span><div><strong>原始备份与聊天阅读</strong><p>微信 4.x 的原始数据库通常已加密。ZIP 会完整保存选定目录中的原始文件，但不能直接显示聊天正文。阅读聊天请前往「聊天阅读」导入可读文件。</p></div></div>
+        <div class="info-note"><span class="icon" data-icon="info"></span><div><strong>两种归档，都能找到打开方式</strong><p>原始备份保存微信文件，首次打开聊天需要本机有效密钥并整理为可读记录；已有可读归档可直接阅读。点击「打开聊天」会优先使用这份备份对应的可读归档，原始文件保持不变。</p></div></div>
         <div class="job-panel" id="archives-job" aria-live="polite" hidden></div>
         <div class="section-heading compact"><h2>全部归档 <span class="count-label" id="archives-total">0 份</span></h2><button class="text-button" data-action="refresh"><span class="icon" data-icon="refresh"></span>刷新</button></div>
         <div class="card" id="all-archives"></div>
@@ -66,7 +66,7 @@
           <div class="reader-topbar-actions">
             <button class="button reader-import-button" data-action="reader-import" title="导入可读归档或文字聊天记录"><span class="icon" data-icon="upload"></span><span>导入</span></button>
             <button class="button reader-export-button" data-action="reader-export" title="导出当前数据源的全部聊天与媒体"><span class="icon" data-icon="archive"></span><span>导出全部</span></button>
-            <button class="text-button reader-open-button" data-action="reader-open" title="打开压缩归档"><span class="icon" data-icon="folder"></span><span>打开归档</span></button>
+            <button class="text-button reader-open-button" data-action="reader-open" title="打开拾聊可读归档或微信原始备份 ZIP"><span class="icon" data-icon="folder"></span><span>打开归档</span></button>
             <button class="text-button" data-action="reader-live" title="返回本机记录" hidden><span class="icon" data-icon="monitor"></span><span>返回本机</span></button>
             <details class="reader-management" id="reader-management">
               <summary title="聊天与归档管理"><span class="icon" data-icon="settings"></span><span>管理</span></summary>
@@ -74,7 +74,7 @@
                 <div class="reader-management-heading"><h2>聊天与归档管理</h2><button class="icon-button" data-action="close-reader-management" aria-label="收起管理面板"><span class="icon" data-icon="close"></span></button></div>
                 <div class="reader-archive-toolbar"><div class="reader-source"><span class="icon" data-icon="archive"></span><div><strong id="reader-source-title">本机记录</strong><p id="reader-source-description">聊天和可用媒体保存在本机，备份时一并保存可读归档。</p></div></div></div>
                 <div class="info-note wechat-connect"><span class="icon" data-icon="lock"></span><div><strong>读取本机微信聊天</strong><p id="wechat-key-status">正在检查本机读取状态…</p><div class="wechat-connect-actions"><button class="button button-dark" data-action="read-wechat"><span class="icon" data-icon="refresh"></span>读取 / 更新聊天</button><button class="text-button" data-action="import-keys">导入已有密钥文件</button></div></div></div>
-                <div class="reader-intro" id="reader-intro"><div><h3>导入可读聊天记录</h3><p>顶部「导入」支持合并拾聊 ZIP 归档，或导入 JSON / JSONL / CSV / TXT 文字记录。</p></div><div class="reader-import-actions"><button class="text-button" data-action="demo">试读示例<span class="icon" data-icon="arrow-right"></span></button></div></div>
+                <div class="reader-intro" id="reader-intro"><div><h3>导入或打开聊天记录</h3><p>「导入」合并拾聊可读 ZIP 或文字记录到本机。「打开归档」支持拾聊可读 ZIP，以及本软件生成的微信原始备份；原始备份需要有效密钥，先在本机整理，较大的文件需要一些时间和磁盘空间。</p></div><div class="reader-import-actions"><button class="text-button" data-action="demo">试读示例<span class="icon" data-icon="arrow-right"></span></button></div></div>
               </div>
             </details>
           </div>
@@ -96,7 +96,19 @@
           <article class="card settings-card"><div class="settings-title"><span class="small-icon mint" data-icon="clock"></span><div><h2>自动备份</h2><p>开启后，由 macOS 每 15 分钟检查一次到期计划。</p></div><label class="switch"><input type="checkbox" id="schedule-enabled" name="schedule_enabled"><span class="switch-track"></span><span class="sr-only">启用自动备份</span></label></div><div class="settings-fields"><div class="schedule-fields"><div class="field-group"><label class="field-label" for="schedule-interval">备份频率</label><select id="schedule-interval" name="interval"><option value="daily">每天一次</option><option value="hourly">每小时一次</option></select></div><div class="field-group"><label class="field-label" for="schedule-time">备份时间 <span>北京时间</span></label><input type="time" id="schedule-time" name="schedule_time" value="22:00" required></div></div><div class="settings-notice"><span class="icon" data-icon="info"></span><p>通常在设定时间后的 15 分钟内执行。备份时需要从微信菜单退出微信；若仍在运行，将暂缓并稍后重试。电脑睡眠会延后执行，关机时无法备份。自动备份默认关闭，请确认目录后再开启。</p></div><p class="schedule-state" id="schedule-state"></p></div></article>
           <div class="settings-actions"><span id="settings-save-status" role="status"></span><button class="button button-dark" id="save-settings" type="submit"><span class="icon" data-icon="check"></span>保存设置</button></div>
         </form>
-        <div class="quiet-note"><span class="icon" data-icon="shield"></span><span>聊天记录不会自动解密。可读的 JSON、CSV 或 TXT 文件可在「聊天阅读」中导入。</span></div>
+        <article class="card settings-card update-card" id="update-card" aria-labelledby="update-heading">
+          <div class="settings-title"><span class="small-icon mint" data-icon="refresh"></span><div><h2 id="update-heading">软件更新</h2><p>Apple Silicon · 准备好后，由你选择重启安装。</p></div><span class="badge badge-neutral" id="update-badge">正在读取</span></div>
+          <div class="settings-fields">
+            <div class="update-auto-row"><div><label for="update-enabled" class="field-label">自动检查并下载更新</label><p class="field-help">每 12 小时检查一次，后台下载更新文件；准备就绪后由你重启安装。</p></div><label class="switch"><input type="checkbox" id="update-enabled" disabled><span class="switch-track"></span><span class="sr-only">自动检查并下载软件更新</span></label></div>
+            <dl class="update-versions"><div><dt>当前版本</dt><dd id="update-current-version">—</dd></div><div><dt>可用版本</dt><dd id="update-latest-version">检查后显示</dd></div></dl>
+            <p class="update-status" id="update-status" role="status">正在读取本机更新状态…</p>
+            <div class="update-download" id="update-download" hidden><div class="update-download-heading"><strong id="update-download-kind">正在准备下载</strong><span id="update-progress-text"></span></div><progress id="update-progress" max="100" aria-label="软件更新下载进度"></progress><p id="update-download-size" class="field-help"></p></div>
+            <p class="update-error" id="update-error" role="alert" hidden></p>
+            <div class="update-actions"><button type="button" class="button button-outline" data-action="update-check" id="update-check" disabled><span class="icon" data-icon="refresh"></span><span id="update-check-label">检查更新</span></button><button type="button" class="button button-dark" data-action="update-install" id="update-install" hidden>重启并更新</button></div>
+            <p class="update-privacy field-help">检查更新会联网获取版本和应用文件，不发送聊天内容。更新保留本机聊天和备份。</p>
+          </div>
+        </article>
+        <div class="quiet-note"><span class="icon" data-icon="shield"></span><span>微信原始备份需要有效密钥才能整理为可读聊天；已有可读归档可直接打开。</span></div>
       </section>
       <footer class="main-footer"><span>拾聊 <span class="footer-divider">/</span> 把日常，慢慢收藏。</span><span>MADE FOR YOUR MEMORIES</span></footer>
     </main>
